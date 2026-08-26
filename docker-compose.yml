@@ -1,0 +1,22 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # Optional: real embedder + reranker via HF TEI. Uncomment when use_real_embedder=1.
+  # tei-embed:
+  #   image: ghcr.io/huggingface/text-embeddings-inference:1.5
+  #   command: --model-id BAAI/bge-m3 --pooling cls
+  #   ports: ["8080:80"]
+  # tei-rerank:
+  #   image: ghcr.io/huggingface/text-embeddings-inference:1.5
+  #   command: --model-id BAAI/bge-reranker-v2-m3 --auto-truncate
+  #   ports: ["8081:80"]
+
+volumes:
+  qdrant_data:

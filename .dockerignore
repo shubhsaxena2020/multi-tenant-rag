@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.db
+.pytest_cache/
+.ruff_cache/
+.env
+rag_tenants.db
+test_rag_tenants.db
+qdrant_storage/
+dist/
+*.egg-info/

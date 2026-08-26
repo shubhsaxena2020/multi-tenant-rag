@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rag-service"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "qdrant-client",
+    "pydantic",
+    "pydantic-settings",
+    "httpx",
+    "tiktoken",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+real = ["sentence-transformers", "trafilatura"]
+test = ["pytest", "httpx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

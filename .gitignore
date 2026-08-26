@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.db
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+
+# Qdrant data
+qdrant_storage/
+
+# Misc
+*.egg-info/
+dist/
+rag_tenants.db
+test_rag_tenants.db
