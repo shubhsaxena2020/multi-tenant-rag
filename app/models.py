@@ -11,6 +11,12 @@ from pydantic import BaseModel, Field
 class TenantCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     plan: str = "standard"  # standard | enterprise (siloed)
+    allowed_groups: list[str] | None = Field(
+        default=None,
+        description="Server-side RBAC: sub-user group labels this tenant is provisioned to use. "
+        "None/'*' allows any group label; an explicit list restricts which acl groups the "
+        "tenant's calls may request (prevents self-escalation). Operator/admin-set only.",
+    )
 
 
 class TenantOut(BaseModel):
@@ -20,6 +26,7 @@ class TenantOut(BaseModel):
     plan: str
     created_at: datetime
     chunk_count: int = 0
+    allowed_groups: list[str] = ["*"]
 
 
 class KeyInfo(BaseModel):
@@ -98,13 +105,19 @@ class JobStatus(BaseModel):
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     top_k: int = Field(default=8, ge=1, le=50)
-    candidate_k: int = Field(default=100, ge=1, le=200)
+    candidate_k: int = Field(default=30, ge=1, le=200)
     rerank: bool = True
     generate: bool = False
     acl: list[str] | None = Field(
         default=None,
         description="Sub-user group ids of the caller; restricts retrieval to chunks "
-        "whose acl intersects these groups (document-level RBAC).",
+        "whose acl intersects these groups (document-level RBAC). Server-validated against "
+        "the tenant's provisioned allowed_groups.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Conversation session id. When set, the question is rewritten against "
+        "prior turns (follow-up resolution) and history is recorded. Enables a chat widget.",
     )
 
 
@@ -115,12 +128,32 @@ class RetrievedChunk(BaseModel):
     text: str
     score: float
     metadata: dict[str, Any] = Field(default_factory=dict)
+    rerank_score: float | None = Field(
+        default=None,
+        description="Post-rerank cross-encoder score, when reranking is enabled. `score` "
+        "always reflects the ordering shown to the client (rerank_score when available, "
+        "else the fusion score), so consumers must not re-sort by `score`.",
+    )
 
 
 class QueryResponse(BaseModel):
     results: list[RetrievedChunk]
     answer: str | None = None
     tenant_id: str
+    rewritten_query: str | None = Field(
+        default=None,
+        description="The self-contained query actually used for retrieval (when conversational "
+        "rewriting was applied). Useful for transparency/debugging.",
+    )
+    out_of_scope: bool = Field(
+        default=False,
+        description="True when retrieval confidence was below threshold (or no context found): "
+        "the answer is a graceful 'no information' handoff, not a grounded answer.",
+    )
+    injection_detected: bool = Field(
+        default=False,
+        description="True when the user turn matched an injection/jailbreak guardrail pattern.",
+    )
 
 
 # ---------- Eval ----------

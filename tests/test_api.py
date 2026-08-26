@@ -2,7 +2,6 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
 
 # Point the app at a local Qdrant + deterministic models (no GB downloads).
 os.environ.setdefault("QDRANT_URL", "http://localhost:6333")
@@ -14,36 +13,7 @@ os.environ.setdefault("MASTER_ENCRYPTION_KEY", "AAAAAAt3stEnvMasterKey0123456789
 
 V = "/api/v1"  # versioned tenant API prefix
 
-
-@pytest.fixture(autouse=True)
-def _clear_settings_cache():
-    # get_settings() is lru_cached; clear between tests so env-based fixtures
-    # (admin key, quotas) don't leak stale values across tests. Also reset the
-    # process-wide rate limiter so per-IP/per-tenant buckets don't accumulate across
-    # tests in the same session. Force in-memory mode for deterministic tests.
-    import os
-
-    from app.config import get_settings
-    from app.ratelimit import reset_limiter
-
-    os.environ.pop("REDIS_URL", None)
-    get_settings.cache_clear()
-    lim = reset_limiter("memory")
-    lim._buckets.clear()
-    yield
-    get_settings.cache_clear()
-    reset_limiter("memory")._buckets.clear()
-
-
-@pytest.fixture()
-def client():
-    # ensure a fresh Qdrant + sqlite for isolation tests
-    if os.path.exists("./test_rag_tenants.db"):
-        os.remove("./test_rag_tenants.db")
-    from app.main import app
-
-    with TestClient(app) as c:
-        yield c
+# Shared fixtures (client, _clear_settings_cache) live in tests/conftest.py
 
 
 def _make_tenant(client, name="acme"):

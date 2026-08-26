@@ -194,7 +194,31 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
 
 
 def _client_ip(request) -> str:
+    """Resolve the real client IP for rate limiting.
+
+    Security: the X-Forwarded-For header is ONLY honored when the immediate connection
+    actually originates from a configured trusted proxy (TRUSTED_PROXIES CIDRs). Otherwise
+    a direct client could spoof XFF and bypass IP throttling. When trusted, we take the
+    *leftmost* (original client) entry, which is the value the trusted proxy prepended.
+    """
+    s = get_settings()
+    raw_peer = request.client.host if request.client else "unknown"
     fwd = request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
-    return (request.client.host if request.client else "unknown")
+    if not fwd:
+        return raw_peer
+    # Is the connection itself from a trusted proxy?
+    trusted = False
+    proxies = [p.strip() for p in s.trusted_proxies.split(",") if p.strip()]
+    if proxies:
+        try:
+            import ipaddress
+
+            peer = ipaddress.ip_address(raw_peer)
+            trusted = any(peer in ipaddress.ip_network(c) for c in proxies)
+        except ValueError:
+            trusted = False
+    if not trusted:
+        # Untrusted connection claiming XFF -> ignore it; use the real socket peer.
+        return raw_peer
+    # Trusted: original client is the first hop in the chain.
+    return fwd.split(",")[0].strip()

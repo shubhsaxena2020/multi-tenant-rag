@@ -11,10 +11,7 @@ the async job runner.
 """
 from __future__ import annotations
 
-import re
 import uuid
-
-import httpx
 
 from .. import tenants
 from ..config import get_settings
@@ -26,21 +23,12 @@ MAX_CHUNK_BATCH = 32  # embed in batches; update progress per batch
 
 
 def fetch_url(url: str, timeout: float = 20.0) -> str:
-    try:
-        from trafilatura import extract  # type: ignore
-    except Exception:  # noqa: BLE001 - optional dependency; fall back to regex strip
-        extract = None
-    resp = httpx.get(
-        url, timeout=timeout, follow_redirects=True,
-        headers={"User-Agent": "rag-service/1.0"},
-    )
-    resp.raise_for_status()
-    body = resp.text
-    if extract is not None:
-        clean = extract(body, url=url)
-        if clean:
-            return clean
-    return re.sub(r"<[^>]+>", " ", body)
+    """Fetch a tenant-supplied URL with SSRF protections (scheme allowlist, resolve-and-
+    reject private/loopback/link-local/metadata ranges, IP-pinned to defeat DNS rebinding,
+    per-hop redirect revalidation, size/time caps). Raises HTTPException on unsafe targets."""
+    from .ssrf import safe_fetch_url
+
+    return safe_fetch_url(url, timeout=timeout)
 
 
 def _enforce_quota(tenant_id: str, n_new: int) -> None:

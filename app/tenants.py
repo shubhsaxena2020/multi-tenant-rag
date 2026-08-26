@@ -11,6 +11,7 @@ hashes are persisted, so a DB leak does not compromise tenants.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -31,6 +32,9 @@ class TenantRow(BaseModel):
     api_key_prefix: str  # first 8 chars of the *active* key, for display
     plan: str
     created_at: datetime
+    # server-side ACL: which sub-user groups this tenant is provisioned to use.
+    # "*" (default) = any group label allowed. Persisted as JSON.
+    allowed_groups: list[str] = ["*"]
 
     # runtime-only field, not persisted
     chunk_count: int = 0
@@ -61,7 +65,8 @@ def _init_schema(conn: sqlite3.Connection) -> None:
                 api_key_prefix TEXT NOT NULL,
                 plan TEXT NOT NULL,
                 created_at TEXT NOT NULL,
-                chunk_count INTEGER NOT NULL DEFAULT 0
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                allowed_groups TEXT NOT NULL DEFAULT '["*"]'
             )
             """
         )
@@ -79,15 +84,22 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         conn.commit()
 
 
-def create_tenant(name: str, tenant_id: str, api_key: str, plan: str) -> TenantRow:
+def create_tenant(
+    name: str,
+    tenant_id: str,
+    api_key: str,
+    plan: str,
+    allowed_groups: list[str] | None = None,
+) -> TenantRow:
     conn = _connect()
     _init_schema(conn)
     now = datetime.now(UTC).isoformat()
+    groups = allowed_groups if allowed_groups is not None else ["*"]
     with _DB_LOCK:
         conn.execute(
-            "INSERT INTO tenants (tenant_id, name, api_key_prefix, plan, created_at, chunk_count) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
-            (tenant_id, name, api_key[:8], plan, now),
+            "INSERT INTO tenants (tenant_id, name, api_key_prefix, plan, created_at, chunk_count, allowed_groups) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?)",
+            (tenant_id, name, api_key[:8], plan, now, json.dumps(groups)),
         )
         conn.execute(
             "INSERT INTO tenant_keys (key_hash, tenant_id, prefix, created_at, revoked) "
@@ -96,7 +108,8 @@ def create_tenant(name: str, tenant_id: str, api_key: str, plan: str) -> TenantR
         )
         conn.commit()
     return TenantRow(
-        tenant_id=tenant_id, name=name, api_key_prefix=api_key[:8], plan=plan, created_at=now
+        tenant_id=tenant_id, name=name, api_key_prefix=api_key[:8], plan=plan,
+        created_at=datetime.fromisoformat(now), allowed_groups=groups,
     )
 
 
@@ -171,6 +184,12 @@ def get_tenant(tenant_id: str) -> TenantRow | None:
     row = conn.execute("SELECT * FROM tenants WHERE tenant_id = ?", (tenant_id,)).fetchone()
     if row is None:
         return None
+    # sqlite3.Row has no .get(); use membership guard (false positive for RUF100/SIM401).
+    raw_groups = row["allowed_groups"] if "allowed_groups" in row else '["*"]'  # noqa: SIM401
+    try:
+        allowed_groups = json.loads(raw_groups)
+    except Exception:  # noqa: BLE001
+        allowed_groups = ["*"]
     return TenantRow(
         tenant_id=row["tenant_id"],
         name=row["name"],
@@ -178,6 +197,7 @@ def get_tenant(tenant_id: str) -> TenantRow | None:
         plan=row["plan"],
         created_at=datetime.fromisoformat(row["created_at"]),
         chunk_count=row["chunk_count"],
+        allowed_groups=allowed_groups,
     )
 
 

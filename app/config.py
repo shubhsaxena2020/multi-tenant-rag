@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # VPS fleet enforces a single global per-tenant/per-IP budget. Empty = in-memory.
     redis_url: str = ""
 
+    # Trusted reverse-proxy CIDRs. X-Forwarded-For is ONLY trusted when the immediate
+    # connection comes from one of these (otherwise a client can spoof it and bypass IP
+    # throttling). Empty = never trust XFF (use the real socket peer). Example:
+    # TRUSTED_PROXIES=10.0.0.0/8,172.17.0.0/16
+    trusted_proxies: str = ""
+
     # Per-tenant quotas (fleet protection). 0 disables.
     tenant_chunk_quota: int = 5_000_000
 
@@ -71,6 +77,11 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
+
+    # Conversation-aware RAG (live chat widget support)
+    retrieval_confidence_threshold: float = 0.15
+    rewrite_enabled: bool = True
+    injection_guard_enabled: bool = True
 
 
 @lru_cache

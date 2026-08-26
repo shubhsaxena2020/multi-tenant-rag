@@ -43,7 +43,9 @@ def _openai_generate(base_url: str, api_key: str, model: str, question: str, chu
 def _extractive_answer(chunks: list[dict]) -> str:
     if not chunks:
         return "No relevant context was found for this question."
-    top = max(chunks, key=lambda c: c.get("score", 0.0))
+    # honor the post-rerank score when present so the extractive fallback matches the
+    # reranked ordering shown in the API response.
+    top = max(chunks, key=lambda c: c.get("rerank_score", c.get("score", 0.0)))
     return (
         "Based on the retrieved context:\n\n" + top["text"]
     )

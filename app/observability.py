@@ -8,6 +8,7 @@ The service must be operable, not just functional. Two primitives:
 from __future__ import annotations
 
 import logging
+import re
 import sys
 import time
 
@@ -62,7 +63,34 @@ def get_logger(name: str = "rag") -> logging.Logger:
 
 class MetricsMiddleware:
     """Record per-request count + latency. Path is normalized to avoid label explosion
-    (template path, not raw URL)."""
+    (template path, not raw URL) so per-tenant/per-doc/per-job IDs in the URL don't
+    create an unbounded number of Prometheus series (a classic OOM footgun)."""
+
+    # Any segment that looks like an id/uuid is collapsed to a template token.
+    _ID_RE = re.compile(
+        r"^(t_[0-9a-f]{8,}|d_[0-9a-f]{8,}|job_[0-9a-f]{8,}|run_[0-9a-f]{8,}|"
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|"
+        r"[0-9a-zA-Z_-]{16,})$"
+    )
+
+    def _normalize(self, path: str) -> str:
+        parts = [p for p in path.split("/") if p != ""]
+        out: list[str] = []
+        for p in parts:
+            if self._ID_RE.match(p):
+                out.append("{id}")
+            else:
+                out.append(p)
+        norm = "/" + "/".join(out) if out else "/"
+        # Map known API prefixes to their canonical template (so e.g. /api/v1/t_xxx ->
+        # /api/v1/{tenant}) even when the id token differs from the documented form.
+        if norm.startswith("/api/v1/"):
+            rest = norm[len("/api/v1/"):]
+            segs = rest.split("/") if rest else []
+            if segs and segs[0] == "{id}":
+                segs[0] = "{tenant}"
+                norm = "/api/v1/" + "/".join(segs)
+        return norm
 
     def __init__(self, app):
         self.app = app
@@ -72,7 +100,11 @@ class MetricsMiddleware:
             await self.app(scope, receive, send)
             return
         method = scope.get("method", "GET")
-        path = scope.get("path", "/")
+        # Normalize the raw path to a template so per-tenant/per-doc/per-job IDs in the
+        # URL don't explode metric label cardinality. We intentionally do NOT rely on
+        # scope["route"] (not populated here); we normalize deterministically instead.
+        raw_path = scope.get("path", "/")
+        label_path = self._normalize(raw_path)
         start = time.perf_counter()
         status = 500
 
@@ -85,5 +117,5 @@ class MetricsMiddleware:
         try:
             await self.app(scope, receive, _send_wrapper)
         finally:
-            REQUEST_COUNT.labels(method=method, path=path, status=status).inc()
-            REQUEST_LATENCY.labels(method=method, path=path).observe(time.perf_counter() - start)
+            REQUEST_COUNT.labels(method=method, path=label_path, status=status).inc()
+            REQUEST_LATENCY.labels(method=method, path=label_path).observe(time.perf_counter() - start)

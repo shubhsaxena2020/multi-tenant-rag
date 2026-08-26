@@ -39,9 +39,33 @@ _BATCH = 256
 _client: QdrantClient | None = None
 _client_lock = threading.Lock()
 
+# Local/embedded Qdrant URLs (no server process needed). These are safe for CI and
+# small single-node deployments; a real fleet still passes a normal `http(s)://host`
+# or `qdrant://host` URL. Embedded mode runs the storage engine in-process.
+_LOCAL_MEMORY = ":memory:"
+_LOCAL_PREFIX = "qdrant-local://"
+
 
 def collection_name(prefix: str, tenant_id: str) -> str:
     return f"{prefix}_{tenant_id}"
+
+
+def _build_client() -> QdrantClient:
+    s = get_settings()
+    url = (s.qdrant_url or "").strip()
+    if url == _LOCAL_MEMORY:
+        # In-process, non-persistent Qdrant (ideal for tests/CI).
+        return QdrantClient(location=":memory:")
+    if url.startswith(_LOCAL_PREFIX):
+        # On-disk local Qdrant: qdrant-local:///abs/path or qdrant-local://rel/path
+        path = url[len(_LOCAL_PREFIX):] or "./qdrant_local"
+        return QdrantClient(path=path)
+    return QdrantClient(
+        url=url,
+        api_key=s.qdrant_api_key or None,
+        timeout=10,
+        # connection pooling handled internally by qdrant_client
+    )
 
 
 def get_client() -> QdrantClient:
@@ -49,14 +73,15 @@ def get_client() -> QdrantClient:
     if _client is None:
         with _client_lock:
             if _client is None:
-                s = get_settings()
-                _client = QdrantClient(
-                    url=s.qdrant_url,
-                    api_key=s.qdrant_api_key or None,
-                    timeout=10,
-                    # connection pooling handled internally by qdrant_client
-                )
+                _client = _build_client()
     return _client
+
+
+def reset_client() -> None:
+    """Drop the cached Qdrant client (used by tests / config reload)."""
+    global _client
+    with _client_lock:
+        _client = None
 
 
 def ensure_collection(client: QdrantClient, tenant_id: str) -> str:
