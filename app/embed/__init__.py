@@ -79,6 +79,50 @@ class DeterministicEmbedder(Embedder):
         return [EmbedResult(dense=self._dense(t), sparse=self._sparse(t)) for t in texts]
 
 
+class FastEmbedEmbedder(Embedder):
+    """Real hybrid embedder via `fastembed` (ONNX, CPU-friendly) — the default real path.
+
+    Dense from a BGE-family model + sparse (SPLADE-style) from a lexical model, fused at
+    retrieval time by RRF. Lightweight enough to run on a CPU VPS node, which matters for
+    the "run at scale on our own VPS fleet" goal (no GPU required per replica).
+    """
+
+    def __init__(
+        self,
+        dense_model: str,
+        sparse_model: str,
+        device: str = "cpu",
+        dim: int = 1024,
+    ):
+        try:
+            from fastembed import SparseTextEmbedding, TextEmbedding
+        except ImportError as e:  # pragma: no cover - optional heavy dep
+            raise RuntimeError(
+                "fastembed is required for the real embedder (USE_REAL_EMBEDDER=1). "
+                "Install with: uv pip install fastembed"
+            ) from e
+
+        providers = ["CPUExecutionProvider"] if device == "cpu" else None
+        self._dense = TextEmbedding(model_name=dense_model, providers=providers)
+        self._sparse = SparseTextEmbedding(model_name=sparse_model, providers=providers)
+        # derive dim from a probe embed (fastembed models vary: bge-m3=1024, bge-small=384)
+        probe = next(iter(self._dense.embed(["probe"])))
+        self.dim = len(probe)
+
+    def embed(self, texts: list[str]) -> list[EmbedResult]:
+        dense = list(self._dense.embed(texts))
+        sparse = list(self._sparse.embed(texts))
+        results: list[EmbedResult] = []
+        for d, s in zip(dense, sparse):
+            d = np.asarray(d, dtype=np.float32)
+            n = float(np.linalg.norm(d)) or 1.0
+            sp = s.as_dict() if hasattr(s, "as_dict") else dict(s)
+            results.append(
+                EmbedResult(dense=(d / n).tolist(), sparse={int(k): float(v) for k, v in sp.items()})
+            )
+        return results
+
+
 class BgeM3Embedder(Embedder):
     """Real BGE-M3: returns dense + sparse (lexical) representations."""
 
@@ -177,7 +221,8 @@ def _deterministic_embedder(settings: Settings) -> Embedder:
 
 
 def _real_embedder(settings: Settings) -> Embedder:
-    # TEI provider if configured; otherwise in-process BGE-M3 (or Qwen3 path).
+    # TEI provider if configured; otherwise in-process (fastembed default, or full
+    # sentence-transformers BGE-M3 when embed_provider=sentence_transformers).
     if settings.embed_base_url:
         key = f"tei:{settings.embed_base_url}:{settings.embed_model}"
         with _lock:
@@ -187,10 +232,22 @@ def _real_embedder(settings: Settings) -> Embedder:
                     settings.vector_size, settings.embed_api_key,
                 )
             return _embedder_cache[key]
-    key = f"real:{settings.embed_model}:{settings.embed_device}"
+
+    if settings.embed_provider == "sentence_transformers":
+        key = f"st:{settings.embed_model}:{settings.embed_device}"
+        with _lock:
+            if key not in _embedder_cache:
+                _embedder_cache[key] = BgeM3Embedder(
+                    settings.embed_model, settings.embed_device, settings.vector_size
+                )
+            return _embedder_cache[key]
+
+    # default real path: fastembed (lightweight ONNX, CPU-friendly)
+    key = f"fe:{settings.embed_model}:{settings.embed_sparse_model}:{settings.embed_device}"
     with _lock:
         if key not in _embedder_cache:
-            _embedder_cache[key] = BgeM3Embedder(
-                settings.embed_model, settings.embed_device, settings.vector_size
+            _embedder_cache[key] = FastEmbedEmbedder(
+                settings.embed_model, settings.embed_sparse_model,
+                settings.embed_device, settings.vector_size,
             )
         return _embedder_cache[key]

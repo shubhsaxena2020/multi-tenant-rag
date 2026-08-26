@@ -16,9 +16,18 @@ class Settings(BaseSettings):
     distance: str = "Cosine"
 
     # Embedding
-    embed_model: str = "BAAI/bge-m3"
+    # Default dense model is multilingual-e5-large (1024-dim) — works with the lightweight
+    # fastembed provider and is multilingual (our tenants are independent client sites,
+    # often non-English). For full BGE-M3 set EMBED_MODEL=BAAI/bge-m3 and
+    # EMBED_PROVIDER=sentence_transformers (heavier, GPU-friendly).
+    embed_model: str = "intfloat/multilingual-e5-large"
     embed_device: str = "cpu"  # cpu | cuda
     use_real_embedder: bool = False
+    # Provider for real embedding: "fastembed" (default, lightweight ONNX) or
+    # "sentence_transformers" (heavier, full BGE-M3). fastembed is preferred for CPU fleets.
+    embed_provider: str = "fastembed"
+    # Sparse (lexical) model for hybrid retrieval — paired with the dense model above.
+    embed_sparse_model: str = "prithivida/Splade_PP_en_v1"
     # Optional TEI (Text Embeddings Inference) endpoint — offloads the model to a GPU
     # node. When set, embedding is done over HTTP instead of in-process.
     embed_base_url: str = ""
