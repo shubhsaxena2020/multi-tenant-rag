@@ -19,16 +19,20 @@ V = "/api/v1"  # versioned tenant API prefix
 def _clear_settings_cache():
     # get_settings() is lru_cached; clear between tests so env-based fixtures
     # (admin key, quotas) don't leak stale values across tests. Also reset the
-    # process-wide in-memory rate limiter so per-IP/per-tenant buckets don't
-    # accumulate across tests in the same session.
-    from app.config import get_settings
-    from app.ratelimit import _limiter
+    # process-wide rate limiter so per-IP/per-tenant buckets don't accumulate across
+    # tests in the same session. Force in-memory mode for deterministic tests.
+    import os
 
+    from app.config import get_settings
+    from app.ratelimit import reset_limiter
+
+    os.environ.pop("REDIS_URL", None)
     get_settings.cache_clear()
-    _limiter._buckets.clear()
+    lim = reset_limiter("memory")
+    lim._buckets.clear()
     yield
     get_settings.cache_clear()
-    _limiter._buckets.clear()
+    reset_limiter("memory")._buckets.clear()
 
 
 @pytest.fixture()
@@ -280,7 +284,6 @@ def test_tenant_admin_offboarding(client):
 
 
 def test_admin_key_blocks_tenant_creation(monkeypatch, client):
-    import os
     monkeypatch.setenv("ADMIN_API_KEY", "supersecret")
     from app.config import get_settings
     get_settings.cache_clear()
@@ -303,8 +306,8 @@ def test_encryption_at_rest(client):
         json={"question": "launch code?", "top_k": 3},
     )
     assert "zebra-9971" in " ".join(h["text"] for h in q.json()["results"])
-    from app.vector_store import get_client, collection_name
     from app.config import get_settings
+    from app.vector_store import collection_name, get_client
     c = get_client()
     name = collection_name(get_settings().collection_prefix, t["tenant_id"])
     pts = c.scroll(collection_name=name, limit=10)[0]
@@ -370,7 +373,6 @@ def test_offline_eval(client):
 
 
 def test_tenant_chunk_quota(monkeypatch, client):
-    import os
     monkeypatch.setenv("TENANT_CHUNK_QUOTA", "2")
     from app.config import get_settings
     get_settings.cache_clear()
@@ -380,3 +382,52 @@ def test_tenant_chunk_quota(monkeypatch, client):
                     json={"title": "big", "content": big, "content_type": "text"})
     assert r.status_code == 429, r.text
     assert "quota" in r.json()["detail"].lower()
+
+
+def test_redis_rate_limiter_enforces_shared_budget():
+    """Integration: when REDIS_URL is configured the limiter must enforce a single
+    shared per-IP budget through the real app path (fleet-safe). Skips if no Redis."""
+    import os
+
+    import redis
+
+    url = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
+    try:
+        rc = redis.Redis.from_url(url, socket_connect_timeout=2)
+        rc.ping()
+    except Exception:  # noqa: BLE001
+        pytest.skip("Redis not available")
+
+    from app.ratelimit import reset_limiter
+
+    os.environ["REDIS_URL"] = url
+    from app.config import get_settings
+    get_settings.cache_clear()
+    reset_limiter("auto")
+    rc.flushdb()
+
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    with TestClient(app) as c:
+        t = c.post(f"{V}/tenants", json={"name": "acme"}).json()
+        key = t["api_key"]
+        auth = {"Authorization": f"Bearer {key}"}
+        codes = [
+            c.post(f"{V}/acme/query", headers=auth, json={"question": "x", "top_k": 1}).status_code
+            for _ in range(130)
+        ]
+    ok = codes.count(200)
+    bad = codes.count(429)
+    # per-IP cap is 120; tenant creation consumes ~1, so we expect rejections once
+    # the shared budget is exhausted (not all 200).
+    assert bad >= 1, f"expected shared-budget rejections, got 200={ok} 429={bad}"
+    # the budget must live in Redis, not in-process only
+    keys = rc.keys("rag:rl:*")
+    assert len(keys) >= 1, "rate-limit state was not written to Redis"
+    rc.flushdb()
+    # restore deterministic in-memory mode for any later tests
+    os.environ.pop("REDIS_URL", None)
+    get_settings.cache_clear()
+    reset_limiter("memory")

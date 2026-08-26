@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Qdrant collection naming
     collection_prefix: str = "rag"
 
+    # Redis (optional) — when set, rate limiting is shared across app replicas so a
+    # VPS fleet enforces a single global per-tenant/per-IP budget. Empty = in-memory.
+    redis_url: str = ""
+
     # Per-tenant quotas (fleet protection). 0 disables.
     tenant_chunk_quota: int = 5_000_000
 

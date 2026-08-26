@@ -67,11 +67,12 @@ independently:
 ### App replicas (stateless)
 - Run N copies of the `rag-service` image behind a load balancer / ingress
   (nginx, Caddy, Traefik, or your cloud LB). They share nothing but Qdrant + Redis.
-- **Rate-limit state**: the in-memory limiter is per-instance. For correct global
-  limits across replicas, back it with Redis (replace `_Bucket` store in
-  `app/ratelimit.py` with a Redis token bucket — the `hit()` interface is unchanged)
-  and set `RATE_*_PER_MIN`. Without Redis, each replica enforces its own limit
-  (still safe, just N× the effective ceiling).
+- **Rate-limit state**: set `REDIS_URL` to a shared Redis (or Redis Cluster) instance and
+  the per-IP/per-tenant token bucket is stored in Redis via an atomic Lua script, so all
+  replicas enforce ONE global budget (a noisy tenant is capped across the whole fleet, not
+  per-node). With `REDIS_URL` unset, the limiter falls back to in-process (single instance,
+  or N× the effective ceiling if you run replicas without Redis). A transient Redis failure
+  degrades to "allow" rather than blocking all traffic. Tune with `RATE_*_PER_MIN`.
 - **Embedding/reranking workers**: if models are GPU-bound, run them on a dedicated
   GPU node pool and point `EMBED_MODEL`/`RERANK_MODEL` at a Text Embeddings Inference
   (TEI) endpoint instead of loading in-process. The embed/rerank interfaces accept a
