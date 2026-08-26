@@ -17,3 +17,9 @@ qdrant_storage/
 dist/
 rag_tenants.db
 test_rag_tenants.db
+
+# model / embedding caches (downloaded at runtime, never commit)
+.flashrank_cache/
+.models/
+*.onnx
+embed_cache/

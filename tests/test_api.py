@@ -431,3 +431,32 @@ def test_redis_rate_limiter_enforces_shared_budget():
     os.environ.pop("REDIS_URL", None)
     get_settings.cache_clear()
     reset_limiter("memory")
+
+
+def test_real_reranker_reorders_by_relevance():
+    """Regression: with USE_REAL_RERANKER=1 the reranker must reorder by true relevance,
+    not just pass through vector-similarity order. Skips if `rerankers` isn't installed."""
+    import os
+
+    try:
+        import rerankers  # noqa: F401
+    except Exception:  # noqa: BLE001
+        pytest.skip("rerankers not installed")
+
+    from app.rerank import get_reranker
+
+    os.environ["USE_REAL_RERANKER"] = "1"
+    from app.config import get_settings
+    get_settings.cache_clear()
+    rk = get_reranker()
+    # The cat doc has the highest *vector* score but is irrelevant to the France query.
+    items = [
+        {"text": "Cats are small mammals that meow and purr.", "score": 0.95},
+        {"text": "The capital of France is Paris. The Eiffel Tower is there.", "score": 0.70},
+        {"text": "Paris is the capital city of France in Western Europe.", "score": 0.60},
+    ]
+    out = rk.rerank("What is the capital of France?", items)
+    assert out[0]["text"].startswith("The capital of France"), out[0]["text"]
+    assert out[-1]["text"].startswith("Cats"), out[-1]["text"]
+    os.environ.pop("USE_REAL_RERANKER", None)
+    get_settings.cache_clear()

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_device: str = "cpu"
     use_real_reranker: bool = False
+    # Provider for real reranking: "flashrank" (default, lightweight CPU Cross-Encoder,
+    # no torch) or "sentence_transformers" (full BGE-Reranker-v2-m3, heavier / GPU).
+    rerank_provider: str = "flashrank"
 
     # Tenant registry (SQLite v1; Postgres-ready)
     db_url: str = "sqlite:///./rag_tenants.db"
