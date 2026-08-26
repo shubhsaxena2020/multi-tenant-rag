@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Qdrant collection naming
     collection_prefix: str = "rag"
 
+    # Rate limiting (requests/min); 0 disables that dimension
+    rate_per_tenant_per_min: int = 600
+    rate_per_ip_per_min: int = 120
+    rate_ingest_jobs_per_min: int = 60
+
     # Optional generation
     llm_base_url: str = ""
     llm_api_key: str = ""

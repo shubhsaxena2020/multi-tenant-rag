@@ -15,11 +15,12 @@ dependencies = [
     "httpx",
     "tiktoken",
     "python-multipart",
+    "prometheus-client",
 ]
 
 [project.optional-dependencies]
 real = ["sentence-transformers", "trafilatura"]
-test = ["pytest", "httpx"]
+test = ["pytest", "httpx", "pytest-timeout", "ruff"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

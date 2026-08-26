@@ -2,7 +2,7 @@
 
 A single ThreadPoolExecutor processes queued jobs. Each job fetches/embeds/upserts
 and reports progress back to the jobs store. Failures are captured as `failed` with
-the error message rather than crashing the worker.
+the error message rather than crashing the worker. Metrics + logs are emitted here.
 """
 from __future__ import annotations
 
@@ -10,7 +10,10 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import jobs
+from ..observability import INGEST_CHUNKS, INGEST_JOBS, get_logger
 from . import ingest_text, ingest_url
+
+log = get_logger("rag")
 
 _executor: ThreadPoolExecutor | None = None
 _lock = threading.Lock()
@@ -28,7 +31,6 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
     try:
         jobs.update_job(job_id, status="running", progress=0.05)
         if kind == "url":
-            # fetch happens inside ingest_url; bump progress after fetch
             def on_progress(done, total):
                 jobs.update_job(job_id, progress=0.1 + 0.9 * (done / total), done_chunks=done, total_chunks=total)
 
@@ -40,8 +42,13 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
             text = payload.get("text") or payload.get("content") or ""
             result = ingest_text(tenant_id, payload.get("title", "untitled"), text, payload.get("content_type", "text"), metadata, on_progress=on_progress)
         jobs.update_job(job_id, status="completed", progress=1.0, result_doc_id=result["doc_id"])
+        INGEST_CHUNKS.labels(tenant_id=tenant_id).inc(result["chunk_count"])
+        INGEST_JOBS.labels(tenant_id=tenant_id, status="completed").inc()
+        log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
     except Exception as e:  # noqa: BLE001
         jobs.update_job(job_id, status="failed", error=str(e)[:2000])
+        INGEST_JOBS.labels(tenant_id=tenant_id, status="failed").inc()
+        log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": str(e)[:2000]})
 
 
 def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:

@@ -8,15 +8,32 @@ services:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
 
-  # Optional: real embedder + reranker via HF TEI. Uncomment when use_real_embedder=1.
-  # tei-embed:
-  #   image: ghcr.io/huggingface/text-embeddings-inference:1.5
-  #   command: --model-id BAAI/bge-m3 --pooling cls
-  #   ports: ["8080:80"]
-  # tei-rerank:
-  #   image: ghcr.io/huggingface/text-embeddings-inference:1.5
-  #   command: --model-id BAAI/bge-reranker-v2-m3 --auto-truncate
-  #   ports: ["8081:80"]
+  redis:
+    # Optional: shared rate-limit state when running >1 app replica.
+    # Without it, each replica enforces its own per-instance limit.
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    profiles: ["ratelimit"]
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      DB_URL: sqlite:///./rag_tenants.db
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      USE_REAL_EMBEDDER: ${USE_REAL_EMBEDDER:-0}
+      USE_REAL_RERANKER: ${USE_REAL_RERANKER:-0}
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      RATE_PER_TENANT_PER_MIN: ${RATE_PER_TENANT_PER_MIN:-600}
+      RATE_PER_IP_PER_MIN: ${RATE_PER_IP_PER_MIN:-120}
+    depends_on:
+      - qdrant
+    restart: unless-stopped
 
 volumes:
   qdrant_data:
