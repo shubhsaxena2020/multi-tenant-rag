@@ -40,7 +40,7 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
                 jobs.update_job(job_id, progress=done / total, done_chunks=done, total_chunks=total)
 
             text = payload.get("text") or payload.get("content") or ""
-            result = ingest_text(tenant_id, payload.get("title", "untitled"), text, payload.get("content_type", "text"), metadata, on_progress=on_progress)
+            result = ingest_text(tenant_id, payload.get("title", "untitled"), text, payload.get("content_type", "text"), metadata, on_progress=on_progress, acl=payload.get("acl"))
         jobs.update_job(job_id, status="completed", progress=1.0, result_doc_id=result["doc_id"])
         INGEST_CHUNKS.labels(tenant_id=tenant_id).inc(result["chunk_count"])
         INGEST_JOBS.labels(tenant_id=tenant_id, status="completed").inc()

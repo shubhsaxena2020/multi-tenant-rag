@@ -27,14 +27,18 @@ from .ingestion.runner import submit
 from .models import (
     DocumentCreate,
     DocumentOut,
+    EvalReportOut,
+    EvalSetIn,
     IngestJobRequest,
     IngestText,
     IngestUrl,
     JobStatus,
+    KeyInfo,
     QueryRequest,
     QueryResponse,
     RetrievedChunk,
     TenantCreate,
+    TenantKeysOut,
     TenantOut,
 )
 from .observability import (
@@ -47,6 +51,7 @@ from .observability import (
     metrics_response,
 )
 from .ratelimit import rate_limit
+from .rbac import build_acl_filter
 from .retrieval import retrieve
 from .validation import (
     validate_content,
@@ -121,7 +126,7 @@ def create_tenant(body: TenantCreate, _: None = Depends(require_admin)):
     log.info("tenant_created", extra={"tenant_id": tenant_id, "tenant_name": body.name})
     return TenantOut(
         tenant_id=row.tenant_id, name=row.name, api_key=api_key,
-        plan=row.plan, created_at=row.created_at,
+        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
     )
 
 
@@ -130,7 +135,7 @@ def list_tenants(_: None = Depends(require_admin)):
     return [
         TenantOut(
             tenant_id=t.tenant_id, name=t.name, api_key=f"{t.api_key_prefix}...",
-            plan=t.plan, created_at=t.created_at,
+            plan=t.plan, created_at=t.created_at, chunk_count=t.chunk_count,
         )
         for t in tenants.list_tenants()
     ]
@@ -155,7 +160,7 @@ def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, request:
     validate_content(body.content)
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
-    res = ingest_text(auth.tenant_id, body.title, body.content, ct, meta)
+    res = ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=body.acl)
     INGEST_CHUNKS.labels(tenant_id=auth.tenant_id).inc(res["chunk_count"])
     INGEST_JOBS.labels(tenant_id=auth.tenant_id, status="completed").inc()
     log.info("document_ingested", extra={"tenant_id": auth.tenant_id, "chunk_count": res["chunk_count"]})
@@ -169,7 +174,7 @@ def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, request:
 def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     meta = validate_metadata(body.metadata)
-    res = ingest_url(auth.tenant_id, body.url, body.title, meta)
+    res = ingest_url(auth.tenant_id, body.url, body.title, meta, acl=body.acl)
     INGEST_CHUNKS.labels(tenant_id=auth.tenant_id).inc(res["chunk_count"])
     INGEST_JOBS.labels(tenant_id=auth.tenant_id, status="completed").inc()
     return DocumentOut(
@@ -184,7 +189,7 @@ def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, request: Re
     validate_content(body.text)
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
-    res = ingest_text(auth.tenant_id, body.title, body.text, ct, meta)
+    res = ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=body.acl)
     INGEST_CHUNKS.labels(tenant_id=auth.tenant_id).inc(res["chunk_count"])
     INGEST_JOBS.labels(tenant_id=auth.tenant_id, status="completed").inc()
     return DocumentOut(
@@ -206,17 +211,17 @@ def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep, requ
     if kind == "url":
         if not body.url:
             raise HTTPException(422, "url is required for kind=url")
-        payload = {"url": body.url, "title": title}
+        payload = {"url": body.url, "title": title, "acl": body.acl}
     elif kind == "text":
         if not body.text:
             raise HTTPException(422, "text is required for kind=text")
         validate_content(body.text)
-        payload = {"text": body.text, "title": title, "content_type": body.content_type}
+        payload = {"text": body.text, "title": title, "content_type": body.content_type, "acl": body.acl}
     elif kind == "document":
         if not body.content:
             raise HTTPException(422, "content is required for kind=document")
         validate_content(body.content)
-        payload = {"content": body.content, "title": title, "content_type": body.content_type}
+        payload = {"content": body.content, "title": title, "content_type": body.content_type, "acl": body.acl}
     else:
         raise HTTPException(422, f"unknown kind: {kind}")
     validate_content_type(body.content_type)
@@ -268,9 +273,10 @@ def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request):
 def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     t0 = time.perf_counter()
+    acl_filter = build_acl_filter(body.acl)
     hits = retrieve(
         auth.tenant_id, body.question, top_k=body.top_k,
-        candidate_k=body.candidate_k, rerank=body.rerank,
+        candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
     )
     RETRIEVAL_LATENCY.labels(tenant_id=auth.tenant_id).observe(time.perf_counter() - t0)
     QUERY_HITS.labels(tenant_id=auth.tenant_id).observe(len(hits))
@@ -286,6 +292,61 @@ def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Request):
         answer = generate_answer(body.question, hits)
     log.info("query", extra={"tenant_id": auth.tenant_id, "hits": len(hits), "generate": body.generate})
     return QueryResponse(results=results, answer=answer, tenant_id=auth.tenant_id)
+
+
+# ---------------- API key management (tenant-scoped rotation) ----------------
+@v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
+    """Issue a new API key for this tenant. The old key remains valid until revoked."""
+    rate_limit(request, auth.tenant_id)
+    new_key = generate_api_key()
+    tenants.add_api_key(auth.tenant_id, new_key)
+    # return only the new key (shown once) alongside tenant info
+    return TenantOut(
+        tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
+        plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
+    )
+
+
+@v1.get("/{tenant}/keys", response_model=TenantKeysOut)
+def list_keys(tenant: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    keys = [KeyInfo(**k) for k in tenants.list_key_prefixes(auth.tenant_id)]
+    return TenantKeysOut(tenant_id=auth.tenant_id, keys=keys)
+
+
+@v1.delete("/{tenant}/keys/{prefix}", status_code=status.HTTP_200_OK)
+def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request):
+    n = tenants.revoke_api_key(auth.tenant_id, prefix)
+    if n == 0:
+        return {"revoked": 0, "note": "no change (last valid key is protected)"}
+    return {"revoked": n}
+
+
+# ---------------- Evaluation (offline RAG quality, no prod traffic) ----------------
+@v1.put("/{tenant}/eval/set", status_code=status.HTTP_200_OK)
+def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    from .eval import save_golden_set
+    from .models import GoldenItem
+
+    items = [GoldenItem(**it.model_dump()) for it in body.items]
+    n = save_golden_set(auth.tenant_id, items)
+    return {"saved": n}
+
+
+@v1.post("/{tenant}/eval/run", response_model=EvalReportOut)
+def run_eval(tenant: str, auth: TenantDep, request: Request,
+             top_k: int = 8, candidate_k: int = 100, rerank: bool = True):
+    rate_limit(request, auth.tenant_id)
+    from .eval import evaluate, load_golden_set
+    from .models import EvalReportOut as _O
+
+    items = load_golden_set(auth.tenant_id)
+    if not items:
+        raise HTTPException(status_code=400, detail="no golden set; PUT /eval/set first")
+    rep = evaluate(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k, rerank=rerank)
+    return _O(**rep.__dict__)
 
 
 # Mount the versioned API

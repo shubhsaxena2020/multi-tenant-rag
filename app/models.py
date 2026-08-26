@@ -19,6 +19,18 @@ class TenantOut(BaseModel):
     api_key: str
     plan: str
     created_at: datetime
+    chunk_count: int = 0
+
+
+class KeyInfo(BaseModel):
+    prefix: str
+    created_at: str
+    revoked: bool
+
+
+class TenantKeysOut(BaseModel):
+    tenant_id: str
+    keys: list[KeyInfo]
 
 
 # ---------- Ingestion ----------
@@ -27,6 +39,10 @@ class DocumentCreate(BaseModel):
     content: str = Field(..., min_length=1)
     content_type: str = "text"  # text | markdown | html | code
     metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = Field(
+        default=None,
+        description="Optional sub-user group ids allowed to see this doc (document-level RBAC).",
+    )
 
 
 class IngestUrl(BaseModel):
@@ -34,6 +50,7 @@ class IngestUrl(BaseModel):
     title: str | None = None
     content_type: str = "html"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = None
 
 
 class IngestText(BaseModel):
@@ -41,6 +58,7 @@ class IngestText(BaseModel):
     text: str = Field(..., min_length=1)
     content_type: str = "text"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = None
 
 
 class DocumentOut(BaseModel):
@@ -55,11 +73,12 @@ class DocumentOut(BaseModel):
 class IngestJobRequest(BaseModel):
     kind: str = Field(default="text", pattern="^(text|url|document)$")
     title: str | None = Field(default=None, max_length=300)
-    text: str | None = None          # for kind=text
-    content: str | None = None       # for kind=document
-    url: str | None = None           # for kind=url
+    text: str | None = None
+    content: str | None = None
+    url: str | None = None
     content_type: str = "text"
     metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = None
 
 
 class JobStatus(BaseModel):
@@ -79,9 +98,14 @@ class JobStatus(BaseModel):
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1)
     top_k: int = Field(default=8, ge=1, le=50)
-    candidate_k: int = Field(default=50, ge=1, le=200)  # initial vector recall
+    candidate_k: int = Field(default=100, ge=1, le=200)
     rerank: bool = True
-    generate: bool = False  # optional answer generation (pluggable provider)
+    generate: bool = False
+    acl: list[str] | None = Field(
+        default=None,
+        description="Sub-user group ids of the caller; restricts retrieval to chunks "
+        "whose acl intersects these groups (document-level RBAC).",
+    )
 
 
 class RetrievedChunk(BaseModel):
@@ -97,3 +121,24 @@ class QueryResponse(BaseModel):
     results: list[RetrievedChunk]
     answer: str | None = None
     tenant_id: str
+
+
+# ---------- Eval ----------
+class GoldenItem(BaseModel):
+    question: str
+    relevant_doc_ids: list[str] = Field(default_factory=list)
+    relevant_texts: list[str] = Field(default_factory=list)
+    expected_answer: str = ""
+
+
+class EvalSetIn(BaseModel):
+    items: list[GoldenItem]
+
+
+class EvalReportOut(BaseModel):
+    questions: int
+    hit_rate: float
+    mrr: float
+    ndcg: float
+    context_recall: float
+    avg_latency_ms: float

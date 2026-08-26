@@ -18,8 +18,11 @@ class Settings(BaseSettings):
     # Embedding
     embed_model: str = "BAAI/bge-m3"
     embed_device: str = "cpu"  # cpu | cuda
-    # If false, use the deterministic hash embedder (tests / no-model environments)
     use_real_embedder: bool = False
+    # Optional TEI (Text Embeddings Inference) endpoint — offloads the model to a GPU
+    # node. When set, embedding is done over HTTP instead of in-process.
+    embed_base_url: str = ""
+    embed_api_key: str = ""
 
     # Reranking
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
@@ -33,8 +36,15 @@ class Settings(BaseSettings):
     api_key_header: str = "authorization"
     admin_api_key: str = ""  # if set, POST/GET/DELETE /tenants require Admin-Key header
 
+    # Encryption-at-rest (per-tenant AES-GCM envelope). MASTER_ENCRYPTION_KEY is the
+    # only operator secret; 32 raw bytes (base64 or 64-hex). Unset = pass-through (dev).
+    master_encryption_key: str = ""
+
     # Qdrant collection naming
     collection_prefix: str = "rag"
+
+    # Per-tenant quotas (fleet protection). 0 disables.
+    tenant_chunk_quota: int = 5_000_000
 
     # Rate limiting (requests/min); 0 disables that dimension
     rate_per_tenant_per_min: int = 600

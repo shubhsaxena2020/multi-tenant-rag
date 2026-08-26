@@ -9,8 +9,26 @@ os.environ.setdefault("QDRANT_URL", "http://localhost:6333")
 os.environ.setdefault("USE_REAL_EMBEDDER", "0")
 os.environ.setdefault("USE_REAL_RERANKER", "0")
 os.environ.setdefault("DB_URL", "sqlite:///./test_rag_tenants.db")
+# Exercise per-tenant encryption-at-rest in tests (AES-GCM envelope).
+os.environ.setdefault("MASTER_ENCRYPTION_KEY", "AAAAAAt3stEnvMasterKey0123456789ABCDEF")
 
 V = "/api/v1"  # versioned tenant API prefix
+
+
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    # get_settings() is lru_cached; clear between tests so env-based fixtures
+    # (admin key, quotas) don't leak stale values across tests. Also reset the
+    # process-wide in-memory rate limiter so per-IP/per-tenant buckets don't
+    # accumulate across tests in the same session.
+    from app.config import get_settings
+    from app.ratelimit import _limiter
+
+    get_settings.cache_clear()
+    _limiter._buckets.clear()
+    yield
+    get_settings.cache_clear()
+    _limiter._buckets.clear()
 
 
 @pytest.fixture()
@@ -270,3 +288,95 @@ def test_admin_key_blocks_tenant_creation(monkeypatch, client):
     assert r.status_code in (401, 403, 404)
     r2 = client.post(f"{V}/tenants", json={"name": "good"}, headers={"Admin-Key": "supersecret"})
     assert r2.status_code == 201
+
+
+def test_encryption_at_rest(client):
+    # MASTER_ENCRYPTION_KEY is set in the test env -> chunk text is sealed in Qdrant.
+    t = _make_tenant(client, "acme")
+    r = client.post(
+        f"{V}/acme/documents", headers=_auth(t["api_key"]),
+        json={"title": "secret", "content": "The launch code is zebra-9971.", "content_type": "text"},
+    )
+    assert r.status_code == 201
+    q = client.post(
+        f"{V}/acme/query", headers=_auth(t["api_key"]),
+        json={"question": "launch code?", "top_k": 3},
+    )
+    assert "zebra-9971" in " ".join(h["text"] for h in q.json()["results"])
+    from app.vector_store import get_client, collection_name
+    from app.config import get_settings
+    c = get_client()
+    name = collection_name(get_settings().collection_prefix, t["tenant_id"])
+    pts = c.scroll(collection_name=name, limit=10)[0]
+    assert all(p.payload["text"].startswith("enc:") for p in pts), "plaintext leaked to Qdrant"
+
+
+def test_document_level_rbac(client):
+    t = _make_tenant(client, "acme")
+    client.post(f"{V}/acme/documents", headers=_auth(t["api_key"]),
+                json={"title": "eng", "content": "Eng memo: launch code zebra-9971.", "content_type": "text", "acl": ["eng"]})
+    client.post(f"{V}/acme/documents", headers=_auth(t["api_key"]),
+                json={"title": "sales", "content": "Sales memo: launch code alpha-4242.", "content_type": "text", "acl": ["sales"]})
+    qe = client.post(f"{V}/acme/query", headers=_auth(t["api_key"]),
+                     json={"question": "launch code", "top_k": 5, "acl": ["eng"]})
+    je = " ".join(h["text"] for h in qe.json()["results"])
+    assert "zebra-9971" in je and "alpha-4242" not in je
+    qs = client.post(f"{V}/acme/query", headers=_auth(t["api_key"]),
+                     json={"question": "launch code", "top_k": 5, "acl": ["sales"]})
+    js = " ".join(h["text"] for h in qs.json()["results"])
+    assert "alpha-4242" in js and "zebra-9971" not in js
+    qn = client.post(f"{V}/acme/query", headers=_auth(t["api_key"]),
+                     json={"question": "launch code", "top_k": 5, "acl": None})
+    jn = " ".join(h["text"] for h in qn.json()["results"])
+    assert "zebra-9971" in jn and "alpha-4242" in jn
+
+
+def test_api_key_rotation(client):
+    t = _make_tenant(client, "acme")
+    old_key = t["api_key"]
+    rot = client.post(f"{V}/acme/keys", headers=_auth(old_key))
+    assert rot.status_code == 201, rot.text
+    new_key = rot.json()["api_key"]
+    assert new_key != old_key
+    assert client.get(f"{V}/acme/jobs", headers=_auth(old_key)).status_code == 200
+    assert client.get(f"{V}/acme/jobs", headers=_auth(new_key)).status_code == 200
+    lst = client.get(f"{V}/acme/keys", headers=_auth(new_key)).json()
+    assert len(lst["keys"]) == 2
+    pref = old_key[:8]
+    rev = client.delete(f"{V}/acme/keys/{pref}", headers=_auth(new_key))
+    assert rev.status_code == 200
+    assert client.get(f"{V}/acme/jobs", headers=_auth(old_key)).status_code == 401
+    last_pref = new_key[:8]
+    rev2 = client.delete(f"{V}/acme/keys/{last_pref}", headers=_auth(new_key))
+    assert rev2.status_code == 200
+    assert rev2.json()["revoked"] == 0
+    assert client.get(f"{V}/acme/jobs", headers=_auth(new_key)).status_code == 200
+
+
+def test_offline_eval(client):
+    t = _make_tenant(client, "acme")
+    client.post(f"{V}/acme/documents", headers=_auth(t["api_key"]),
+                json={"title": "facts", "content": "The capital of France is Paris. The Eiffel Tower is in Paris.", "content_type": "text"})
+    gs = client.put(f"{V}/acme/eval/set", headers=_auth(t["api_key"]), json={
+        "items": [{"question": "capital of France", "relevant_texts": ["The capital of France is Paris"]}]})
+    assert gs.status_code == 200
+    rep = client.post(f"{V}/acme/eval/run", headers=_auth(t["api_key"]),
+                      params={"top_k": 5, "rerank": True})
+    assert rep.status_code == 200, rep.text
+    body = rep.json()
+    assert body["questions"] == 1
+    assert body["hit_rate"] >= 1.0, body
+    assert body["context_recall"] > 0.0
+
+
+def test_tenant_chunk_quota(monkeypatch, client):
+    import os
+    monkeypatch.setenv("TENANT_CHUNK_QUOTA", "2")
+    from app.config import get_settings
+    get_settings.cache_clear()
+    t = _make_tenant(client, "acme")
+    big = " ".join(f"sentence number {i} about cats and dogs and birds and trees and music" for i in range(120))
+    r = client.post(f"{V}/acme/documents", headers=_auth(t["api_key"]),
+                    json={"title": "big", "content": big, "content_type": "text"})
+    assert r.status_code == 429, r.text
+    assert "quota" in r.json()["detail"].lower()

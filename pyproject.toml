@@ -16,6 +16,7 @@ dependencies = [
     "tiktoken",
     "python-multipart",
     "prometheus-client",
+    "cryptography",
 ]
 
 [project.optional-dependencies]
