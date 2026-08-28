@@ -14,8 +14,16 @@ next step so it isn't a dead note.
   circuit breaker + retry + reranker fallback. Next: expose breaker state in /health/deps
   (already done) and wire an Alertmanager receiver.
 - [DONE] **Backup & DR**: Qdrant snapshots API + SQLite/PG backup + KMS key versioning with
-  non-breaking rotation. Next: schedule nightly snapshots via cron + offsite copy; run the
-  DR drill in CI against a real Qdrant container (currently skipped under :memory:).
+  non-breaking rotation. Next: schedule nightly snapshots via cron + offsite copy; run the DR
+  drill in CI against a real Qdrant container (currently skipped under :memory:).
+  STATUS (v8.1.1): added deploy/native/nightly_backup.sh (snapshots all collections + metadata
+  backup, optional offsite copy, local retention, cron line included). Ran LIVE: snapshots `rag`
+  + SQLite backup produced (exit 0). Fixed a real recover bug in app/backup.py: recover_snapshot
+  `location` must be a `file://` URI (bare leading-slash path is rejected by qdrant_client as
+  "relative URL without a base"); documented that native hosts MUST set QDRANT__STORAGE__SNAPSHOTS_PATH
+  to a real server-readable dir AND point config qdrant_snapshot_dir at the same path, or recover
+  reports "Snapshot file ... not found". The live VPS qdrant currently has 4 `rag` snapshots,
+  confirming create works; recover on this host is gated on the deploy fixing the snapshots path.
 - [ ] **Horizontal scaling of ingestion workers**: the in-memory job queue (app/db.py jobs)
   is durable but single-replica. For N replicas, front with an at-least-once queue
   (Cloud Tasks / RQ / Celery) that calls the existing runner. Documented in requeue_orphaned_jobs().

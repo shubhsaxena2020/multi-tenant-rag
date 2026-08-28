@@ -59,14 +59,20 @@ def recover_qdrant_snapshot(
     """Restore a collection from a previously created snapshot.
 
     `location` is the absolute path or URL the Qdrant node can read the snapshot from.
-    For a same-node Docker/self-hosted Qdrant the snapshot already lives in the node's
-    snapshot dir (default /qdrant/snapshots/<collection>/<name>), which is what we pass
-    when `location` is omitted. For remote/object-storage recovery, pass a https:// URL.
-    The Qdrant recover API requires an absolute location (it rejects a bare name).
+    For a same-node Qdrant the snapshot already lives in the node's snapshot dir
+    (default /qdrant/storage/snapshots/<collection>/<name> under Docker, or whatever
+    QDRANT__STORAGE__SNAPSHOTS_PATH points at on a native host). The qdrant_client
+    validates `location` as a URL, so a bare local path must be passed as a `file://`
+    URI (a leading-slash path is rejected as "relative URL without a base").
+
+    DEPLOY NOTE: on a native (non-Docker) host, set QDRANT__STORAGE__SNAPSHOTS_PATH to a
+    real directory the qdrant process can read AND write, and point this module's
+    `qdrant_snapshot_dir` config at the SAME path. Otherwise recover will report
+    "Snapshot file ... not found" even though create_snapshot "succeeded".
     """
     s = get_settings()
     name = collection or s.collection_prefix
-    loc = location or f"{s.qdrant_snapshot_dir.rstrip('/')}/{name}/{snapshot_name}"
+    loc = location or f"file://{s.qdrant_snapshot_dir.rstrip('/')}/{name}/{snapshot_name}"
     client = get_client()
     client.recover_snapshot(collection_name=name, location=loc)
 
