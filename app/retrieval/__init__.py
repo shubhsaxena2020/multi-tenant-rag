@@ -15,11 +15,9 @@ could be bypassed.
 """
 from __future__ import annotations
 
-from ..config import get_settings
 from ..embed import get_embedder
-from ..rerank import get_reranker
-from ..vector_store import search_dense, search_sparse
 from ..observability import get_logger
+from ..rerank import get_reranker
 
 log = get_logger("rag")
 
@@ -48,16 +46,15 @@ def retrieve(
 ) -> list[dict]:
     embedder = get_embedder()
     reranker = get_reranker()
-    q_text = question
-    settings = get_settings()
-    if settings.embed_model == "intfloat/multilingual-e5-large":
-        q_text = f"query: {question}"
-    q = embedder.embed_query(q_text)
+    # Query/document prefixing (e.g. E5 query:/passage:) is handled centrally by the
+    # embedder so passages (ingestion) and queries stay consistent (v8 #4).
+    q = embedder.embed_query(question)
 
     # Use native Qdrant hybrid search with prefetch + server-side fusion
     # This replaces the client-side RRF fusion for better performance and accuracy
-    from ..vector_store import search_hybrid
     from qdrant_client.models import Filter
+
+    from ..vector_store import search_hybrid
     
     # Convert acl_filter to Qdrant Filter if needed
     qdrant_acl_filter: Filter | None = None

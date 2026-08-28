@@ -1,0 +1,40 @@
+# Prometheus scrape + alerting config for the multi-tenant RAG service (v8 P0 monitoring).
+#
+# Goal (v8 PRIORITY 0): a dead Qdrant / dead app must be detected within MINUTES, not
+# discovered days later by an external audit. We achieve this by scraping both the app's
+# /metrics and Qdrant's native :6333/metrics, then alerting on `up == 0` (target down)
+# plus the SLO/circuit-breaker rules in alert.rules.yml. Alerts route to Alertmanager.
+#
+# Run with: docker compose --profile monitoring up -d
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: "rag-vps"
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: rag-app
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["app:8000"]
+        labels:
+          service: rag-app
+
+  - job_name: qdrant
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["qdrant:6333"]
+        labels:
+          service: qdrant
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

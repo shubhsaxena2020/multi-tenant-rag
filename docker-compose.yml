@@ -45,9 +45,11 @@ services:
       QDRANT_URL: http://qdrant:6333
       DB_URL: sqlite:///./rag_tenants.db
       ADMIN_API_KEY: ${ADMIN_API_KEY:-}
+      MASTER_ENCRYPTION_KEY: ${MASTER_ENCRYPTION_KEY:-}
       USE_REAL_EMBEDDER: ${USE_REAL_EMBEDDER:-0}
-      USE_REAL_RERANKER: ${USE_REAL_RERANKER:-0}
-      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-m3}
+      USE_REAL_RERANKER: ${USE_REAL_RERANKER:-1}
+      EMBED_MODEL: ${EMBED_MODEL:-intfloat/multilingual-e5-large}
+      EMBED_PREFIX_STYLE: ${EMBED_PREFIX_STYLE:-e5}
       RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
       RATE_PER_TENANT_PER_MIN: ${RATE_PER_TENANT_PER_MIN:-600}
       RATE_PER_IP_PER_MIN: ${RATE_PER_IP_PER_MIN:-120}
@@ -55,5 +57,58 @@ services:
       - qdrant
     restart: unless-stopped
 
+  # ---------------- v8 P0 monitoring/alerting ----------------
+  # Bring up with: docker compose --profile monitoring up -d
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+      - prom_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./deploy/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  alert-webhook:
+    # Local Alertmanager webhook sink -> /var/log/rag-alerts.log (no external integration needed).
+    image: python:3.11-slim
+    working_dir: /app
+    command: ["sh", "-c", "pip install --quiet --no-cache-dir 2>/dev/null; python3 deploy/alert_webhook.py"]
+    volumes:
+      - .:/app
+    ports:
+      - "9099:9099"
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    restart: unless-stopped
+    profiles: ["monitoring"]
+
 volumes:
   qdrant_data:
+  prom_data:
+  grafana_data:

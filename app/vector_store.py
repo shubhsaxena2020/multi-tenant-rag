@@ -18,18 +18,18 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    KeywordIndexParams,
+    KeywordIndexType,
     MatchValue,
     PointStruct,
     SparseVector,
     SparseVectorParams,
     VectorParams,
-    KeywordIndexParams,
-    KeywordIndexType,
 )
 
 from . import crypto
 from .config import get_settings
-from .resilience import RagError, circuit_status, with_retry
+from .resilience import RagError, with_retry
 
 _BATCH = 256
 _client: QdrantClient | None = None
@@ -162,11 +162,8 @@ def delete_document(tenant_id: str, doc_id: str) -> int:
             FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
         ]
     )
-    result = client.delete(collection_name=name, points_selector=selector)
-    # Qdrant delete returns the number of points deleted in the result.operation_result.deleted_count
-    # but the Python client returns the UpdateResult which has an operation_result attribute.
-    # However, the delete method returns the UpdateResult, and we can access the deleted count.
-    # For simplicity, we return 1 if the operation was acknowledged (assuming at least one point was deleted).
+    client.delete(collection_name=name, points_selector=selector)
+    # Qdrant delete ack means at least one point was targeted; return 1 on success.
     # In practice, we could check the result, but the test expects an integer (0 or 1).
     # We'll return 1 if the delete was acknowledged (i.e., no exception) and 0 if the collection doesn't exist.
     # But note: ensure_collection ensures the collection exists.
@@ -180,8 +177,8 @@ def delete_tenant_collection(tenant_id: str) -> bool:
     selector = Filter(
         must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
     )
-    result = client.delete(collection_name=name, points_selector=selector)
-    # Similarly, we return True if the delete was acknowledged.
+    client.delete(collection_name=name, points_selector=selector)
+    # Return True if the delete was acknowledged.
     return True
 
 

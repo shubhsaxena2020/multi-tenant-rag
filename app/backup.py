@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from .config import get_settings
@@ -33,7 +33,7 @@ BACKUP_DIR = os.environ.get("BACKUP_DIR", "/var/backups/rag-service")
 
 
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
 
 
 # ---------------- 1. Qdrant vector snapshots ----------------
@@ -107,7 +107,7 @@ def backup_db(out_dir: str | None = None) -> str:
     stamp = _ts()
     url = s.db_url
 
-    if url.startswith("postgresql+") or url.startswith("postgres://"):
+    if url.startswith(("postgresql+", "postgres://")):
         out_path = os.path.join(target, f"rag_metadata_{stamp}.sql")
         # pg_dump needs a libpq connection string (strip the async driver prefix).
         conn = url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg://", "postgresql://")

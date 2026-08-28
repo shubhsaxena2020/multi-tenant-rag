@@ -69,17 +69,14 @@ def _is_blocked(ip: object) -> bool:
     # Additionally reject any IPv6 address that is reserved/translated/mapped at the
     # protocol level, even if is_global reported True (covers edge prefixes beyond the
     # well-known NAT64 range). Public unicast with no special flag is required.
-    if ip.version == 6:
-        if (
-            ip.is_reserved
-            or ip.is_link_local
-            or ip.is_private
-            or ip.is_loopback
-            or ip.is_multicast
-            or (hasattr(ip, "is_unspecified") and ip.is_unspecified)
-        ):
-            return True
-    return False
+    return ip.version == 6 and (
+        ip.is_reserved
+        or ip.is_link_local
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_multicast
+        or (hasattr(ip, "is_unspecified") and ip.is_unspecified)
+    )
 
 
 def _validate_port(host: str, port: int | None) -> None:

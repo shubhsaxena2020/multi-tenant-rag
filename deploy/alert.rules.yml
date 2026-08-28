@@ -4,6 +4,30 @@
 # app/observability.py + app/resilience.py.
 
 groups:
+  - name: rag-availability
+    rules:
+      # P0 (v8): Qdrant is DOWN. This is the exact incident the audit found undiscovered for
+      # 2 days. Prometheus scrapes Qdrant's native :6333/metrics; if the target is unreachable
+      # `up` goes to 0 within one scrape interval (~15s) → paged within minutes.
+      - alert: QdrantDown
+        expr: up{service="qdrant"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "Qdrant vector store is DOWN"
+          description: "Qdrant :6333/metrics not reachable for 1m. All retrieval/ingestion fails (degraded mode). Investigate the qdrant container + disk."
+
+      # P0 (v8): The RAG app itself is down/unreachable.
+      - alert: RAGAppDown
+        expr: up{service="rag-app"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "RAG app is DOWN"
+          description: "app:8000/metrics not reachable for 1m. The public API is unavailable."
+
   - name: rag-slo
     rules:
       # Availability SLO: >0.5% of requests are 5xx over a 10m window.

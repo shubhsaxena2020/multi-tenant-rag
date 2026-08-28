@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from . import tenants
 from .retrieval import retrieve
 
 
@@ -105,10 +104,10 @@ def evaluate(
 
 
 # ---- golden-set persistence (per tenant, in the registry DB) ----
-from .db import get_session_maker
+
 from sqlalchemy import text
-import json
-from dataclasses import asdict
+
+from .db import get_session_maker
 
 
 async def save_golden_set(tenant_id: str, items: list[EvalItem]) -> int:
@@ -269,7 +268,7 @@ def _extract_json(s: str) -> str:
     if s.startswith("```"):
         s = s.split("```", 2)[1]
         if s.startswith("json"):
-            s = s[4:]
+            s = s.removeprefix("json")
     a, b = s.find("["), s.rfind("]")
     if a != -1 and b != -1:
         return s[a:b + 1]
@@ -294,7 +293,6 @@ def evaluate_quality(
     """Extended eval that ALSO scores answer faithfulness + relevancy via the self-hosted
     judge (v9-4). When no judge is configured, falls back to lexical heuristics and
     judge_available=False."""
-    import time
 
     from .generation import generate_answer as _gen
 

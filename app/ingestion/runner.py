@@ -33,7 +33,7 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
     asyncio.set_event_loop(loop)
     try:
         loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         log.exception("ingest_job_failed")
         # Sanitize error before persisting/logging (G): keep type + short message,
         # never the full traceback/raw exception text (could leak internal detail).

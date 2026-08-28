@@ -4,22 +4,21 @@ All operations are async for horizontal scaling compatibility.
 """
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
-from typing import AsyncGenerator
 
 from sqlalchemy import (
-    Column,
-    String,
-    Text,
+    Boolean,
     DateTime,
     Integer,
-    Boolean,
-    select,
-    update,
+    String,
+    Text,
     delete,
     func,
+    select,
+    update,
 )
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -196,7 +195,7 @@ async def revoke_api_key(tenant_id: str, key_prefix: str, session: AsyncSession 
         stmt = select(TenantKey).where(
             TenantKey.tenant_id == tenant_id,
             TenantKey.prefix == key_prefix,
-            TenantKey.revoked == False,  # noqa: E712
+            TenantKey.revoked == False,
         )
         result = await s.execute(stmt)
         key = result.scalar_one_or_none()
@@ -207,7 +206,7 @@ async def revoke_api_key(tenant_id: str, key_prefix: str, session: AsyncSession 
         valid_count = await s.scalar(
             select(func.count(TenantKey.key_hash)).where(
                 TenantKey.tenant_id == tenant_id,
-                TenantKey.revoked == False,  # noqa: E712
+                TenantKey.revoked == False,
             )
         )
         if valid_count == 0:
@@ -247,7 +246,7 @@ async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -
     async with (session or get_session_maker())() as s:
         stmt = select(TenantKey.tenant_id).where(
             TenantKey.key_hash == _key_hash(api_key),
-            TenantKey.revoked == False,  # noqa: E712
+            TenantKey.revoked == False,
         )
         result = await s.execute(stmt)
         tenant_id = result.scalar_one_or_none()

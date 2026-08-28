@@ -21,8 +21,9 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Awaitable, Callable, TypeVar
+from typing import TypeVar
 
 from .config import get_settings
 
@@ -213,7 +214,7 @@ async def with_timeout(coro: Awaitable[T], seconds: float, dependency: str = "ba
     """Bound a coroutine with a timeout; on expiry raise RagError (degraded)."""
     try:
         return await asyncio.wait_for(asyncio.shield(coro), timeout=seconds)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         raise RagError(
             f"{dependency} timed out after {seconds:.0f}s (degraded mode)",
             internal=f"TimeoutError after {seconds}s on {dependency}",

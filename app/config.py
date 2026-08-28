@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     embed_provider: str = "fastembed"
     # Sparse (lexical) model for hybrid retrieval — paired with the dense model above.
     embed_sparse_model: str = "prithivida/Splade_PP_en_v1"
+    # Prefix style for the dense model. multilingual-e5-large REQUIRES `query:`/`passage:`
+    # prefixes (v8 #4 retrieval-quality bug). Set to "none" for models that must not be
+    # prefixed (BGE-M3, most others). "e5" adds the required prefixes; auto-detect would be
+    # fragile, so we make it an explicit, audited knob.
+    embed_prefix_style: str = "e5"
     # Optional TEI (Text Embeddings Inference) endpoint — offloads the model to a GPU
     # node. When set, embedding is done over HTTP instead of in-process.
     embed_base_url: str = ""

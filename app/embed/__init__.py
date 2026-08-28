@@ -44,7 +44,37 @@ class Embedder(ABC):
     def embed(self, texts: list[str]) -> list[EmbedResult]: ...
 
     def embed_query(self, text: str) -> EmbedResult:
-        return self.embed([text])[0]
+        return self.embed(self._prefix([text], "query"))[0]
+
+    def embed_passages(self, texts: list[str]) -> list[EmbedResult]:
+        return self.embed(self._prefix(list(texts), "passage"))
+
+    def _prefix(self, texts: list[str], kind: str) -> list[str]:
+        """Apply model-specific prefixes (e.g. E5 `query:`/`passage:`).
+
+        multilingual-e5-large REQUIRES `query:` and `passage:` prefixes or retrieval
+        quality collapses (v8 #4). Other models (BGE-M3, etc.) must NOT be prefixed, so
+        this is gated on the configured prefix style. The deterministic embedder used in
+        tests short-circuits (no prefix) so its hashes stay stable.
+        """
+        style = _prefix_style()
+        if style == "e5":
+            tag = "query: " if kind == "query" else "passage: "
+            return [f"{tag}{t}" for t in texts]
+        return texts
+
+
+_PREFIX_STYLE: str = "none"
+
+
+def _prefix_style() -> str:
+    global _PREFIX_STYLE
+    if _PREFIX_STYLE is None:
+        try:
+            _PREFIX_STYLE = get_settings().embed_prefix_style
+        except Exception:  # noqa: BLE001 - settings may be unavailable in odd contexts
+            _PREFIX_STYLE = "none"
+    return _PREFIX_STYLE
 
 
 class DeterministicEmbedder(Embedder):
@@ -53,6 +83,10 @@ class DeterministicEmbedder(Embedder):
     dense = hash→unit vector (as before). sparse = hashed bag-of-words token ids so the
     RRF fusion path is exercised end-to-end without a real model.
     """
+
+    def _prefix(self, texts: list[str], kind: str) -> list[str]:
+        # Tests rely on stable hashes; never prefix in the deterministic path.
+        return texts
 
     def __init__(self, dim: int = 1024, seed: int = 0, vocab: int = 30_000):
         self.dim = dim

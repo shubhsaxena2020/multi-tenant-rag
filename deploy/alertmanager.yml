@@ -1,0 +1,35 @@
+# Alertmanager config for the multi-tenant RAG service (v8 P0 monitoring).
+#
+# Default receiver writes every alert to a local log file so an operator can `tail` it
+# WITHOUT any external integration. For production paging, replace the `log` receiver's
+# webhook with Slack/PagerDuty/Opsgenie (see commented example) and set routing.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: log
+  group_by: ["alertname", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+  routes:
+    - matchers:
+        - severity = "page"
+      receiver: log
+    - matchers:
+        - severity = "warn"
+      receiver: log
+
+receivers:
+  - name: log
+    webhook_configs:
+      # A tiny local webhook server writes alerts to /var/log/rag-alerts.log.
+      # Launch it with: python3 deploy/alert_webhook.py  (runs on :9099)
+      - url: "http://alert-webhook:9099/alert"
+        send_resolved: true
+    # --- Production alternative (uncomment + set env): ---
+    # slack_configs:
+    #   - api_url: "${SLACK_WEBHOOK_URL}"
+    #     channel: "#rag-alerts"
+    #     title: "{{ .GroupLabels.alertname }}"
+    #     text: "{{ .CommonAnnotations.description }}"

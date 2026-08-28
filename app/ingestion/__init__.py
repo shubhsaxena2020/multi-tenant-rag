@@ -12,7 +12,7 @@ the async job runner.
 from __future__ import annotations
 
 import uuid
-from typing import Callable
+from collections.abc import Callable
 
 from .. import tenants
 from ..config import get_settings
@@ -69,11 +69,9 @@ async def ingest_core(
     sparse: list[dict[int, float]] = []
     for i in range(0, total, MAX_CHUNK_BATCH):
         batch = texts[i: i + MAX_CHUNK_BATCH]
-        # Add passage prefix for intfloat/multilingual-e5-large model
-        settings = get_settings()
-        if settings.embed_model == "intfloat/multilingual-e5-large":
-            batch = [f"passage: {text}" for text in batch]
-        results = embedder.embed(batch)
+        # Prefixing (e.g. E5 query:/passage:) is handled centrally by the embedder so
+        # queries and passages stay consistent (v8 #4).
+        results = embedder.embed_passages(batch)
         dense.extend(r.dense for r in results)
         sparse.extend(r.sparse for r in results)
         if on_progress:

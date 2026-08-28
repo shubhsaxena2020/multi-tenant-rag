@@ -64,8 +64,8 @@ from .rbac import (
     build_acl_filter,
     resolve_acl,
 )
+from .resilience import RagError, circuit_status
 from .retrieval import retrieve
-from .resilience import RagError, circuit_status, reset_breakers
 from .validation import (
     validate_content,
     validate_content_type,
@@ -248,8 +248,8 @@ def widget_html():
 @app.get("/health/slo")
 def health_slo():
     """v9-5: current SLO status (availability + p95 latency) vs configured targets."""
-    from .observability import compute_slo_status
     from .config import get_settings
+    from .observability import compute_slo_status
 
     s = get_settings()
     status = compute_slo_status(s.slo_latency_p95_s, s.slo_availability)
@@ -561,6 +561,9 @@ def query_stream(
     def _sse():
         try:
             rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+            if was_rewritten:
+                # Surface the clarified query to the client (useful for chat UIs).
+                yield f"event: rewritten\ndata: {json.dumps({'query': rewritten})}\n\n"
             injection = bool(body.question) and detect_injection(body.question)
             acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
             hits = []

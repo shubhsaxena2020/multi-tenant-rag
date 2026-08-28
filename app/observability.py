@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import math
 import re
 import sys
 import time
 import uuid
-from typing import Any
 
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -101,7 +101,7 @@ def compute_slo_status(target_latency_p95: float, target_availability: float) ->
     total = ok + err
     availability = (ok / total) if total else 1.0
     p95 = _histogram_p95(SLO_LATENCY_OBS) or 0.0
-    if p95 == float("inf") or p95 != p95:  # inf or nan -> no data yet
+    if p95 == float("inf") or math.isnan(p95):  # inf or nan -> no data yet
         p95 = 0.0
     return {
         "availability": round(availability, 4),
@@ -214,7 +214,7 @@ class MetricsMiddleware:
                     tenant = await tenants.get_tenant_by_key(key)
                     if tenant is not None:
                         tenant_id = tenant.tenant_id
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - logging must never fail the request
                     # If we fail, leave tenant_id as empty string
                     pass
 
