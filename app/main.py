@@ -11,6 +11,7 @@ per-IP rate limiting on every tenant route.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 import uuid
@@ -21,6 +22,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import jobs as job_store
 from . import tenants
+from .audit import append_audit, list_audit, verify_chain
 from .auth import generate_api_key, get_tenant_from_header, require_admin
 from .config import get_settings
 from .conversation import (
@@ -167,6 +169,20 @@ v1 = FastAPI(
 TenantDep = Annotated[tenants.TenantRow, Depends(get_tenant_from_header)]
 
 
+async def audit_event(action: str, actor: str, target: str = "", meta: dict | None = None) -> None:
+    """Best-effort, fail-open audit append. Never raises (see app/audit.py).
+
+    `actor` is always server-derived (admin key fingerprint or 'system'), never the
+    untrusted request body — so the audit trail itself can't be spoofed by a caller.
+    """
+    # Hash the admin key to a stable, non-secret fingerprint (never log the raw key).
+    if actor and actor != "system" and len(actor) > 12:
+        actor = "admin:" + hashlib.sha256(actor.encode()).hexdigest()[:12]
+    elif actor and actor != "system":
+        actor = "admin:" + actor
+    await append_audit(action, actor, target=target, meta=meta)
+
+
 def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, default_to_public: bool) -> list[str]:
     """Server-side RBAC: narrow caller-requested groups to what the tenant is provisioned
     for. Unauthorized groups are dropped and surfaced in telemetry (self-escalation attempt).
@@ -242,7 +258,7 @@ def widget_html():
     # The iframe itself is locked to allowed embed origins; the inner page gets a
     # permissive-enough CSP for its own scripts but no frame nesting beyond what we set.
     return HTMLResponse(body, media_type="text/html",
-                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"})
+                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"}}
 
 
 @app.get("/health/slo")
@@ -277,9 +293,24 @@ def docs(_: None = Depends(require_admin)):
     return get_swagger_ui_html(openapi_url="/api/v1/openapi.json", title="RAG Service API")
 
 
-# ---------------- Admin: tenants ---------------
+# ---------------- Admin: tamper-evident audit log ----------------
+@app.get("/audit")
+async def audit_log(_: None = Depends(require_admin), limit: int = 200):
+    """Read the hash-chained audit trail. Admin-gated (fail-closed like /metrics)."""
+    rows = await list_audit(limit=limit)
+    return {"entries": rows, "count": len(rows)}
+
+
+@app.get("/audit/verify")
+async def audit_verify(_: None = Depends(require_admin)):
+    """Verify chain integrity. `ok=False` + `first_break_id` indicates tampering."""
+    return await verify_chain()
+
+
+# ---------------- Admin: tenants ----------------
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def create_tenant(body: TenantCreate, _: None = Depends(require_admin)):
+async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
     tenant_id = f"t_{uuid.uuid4().hex[:12]}"
     api_key = generate_api_key()
     row = await tenants.create_tenant(body.name, tenant_id, api_key, body.plan, body.allowed_groups)
@@ -288,6 +319,10 @@ async def create_tenant(body: TenantCreate, _: None = Depends(require_admin)):
     except Exception as exc:
         log.warning("ensure_collection failed for %s: %s", tenant_id, exc)
     log.info("tenant_created", extra={"tenant_id": tenant_id, "tenant_name": body.name})
+    await audit_event(
+        "tenant.create", actor=admin_key, target=tenant_id,
+        meta={"name": body.name, "plan": body.plan, "allowed_groups": body.allowed_groups},
+    )
     return TenantOut(
         tenant_id=row.tenant_id, name=row.name, api_key=api_key,
         plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
@@ -307,14 +342,19 @@ async def list_tenants(_: None = Depends(require_admin)):
 
 
 @v1.delete("/tenants/{tenant_id}", status_code=status.HTTP_200_OK)
-async def delete_tenant(tenant_id: str, _: None = Depends(require_admin)):
+async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(require_admin)):
     """Offboard a tenant: drop its Qdrant collection (hard data removal) and remove
     the registry row. This guarantees no residual vectors remain."""
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
     dropped = delete_tenant_collection(tenant_id)
     removed = await tenants.delete_tenant(tenant_id)
     if not removed:
         raise HTTPException(status_code=404, detail="tenant not found")
     log.info("tenant_offboarded", extra={"tenant_id": tenant_id, "collection_dropped": dropped})
+    await audit_event(
+        "tenant.delete", actor=admin_key, target=tenant_id,
+        meta={"collection_dropped": dropped},
+    )
     return {"deleted": tenant_id, "collection_dropped": dropped}
 
 
@@ -619,6 +659,10 @@ async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     new_key = generate_api_key()
     await tenants.add_api_key(auth.tenant_id, new_key)
+    await audit_event(
+        "key.rotate", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": new_key[:8]},
+    )
     # return only the new key (shown once) alongside tenant info
     return TenantOut(
         tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
@@ -639,6 +683,10 @@ async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request
     n = await tenants.revoke_api_key(auth.tenant_id, prefix)
     if n == 0:
         return {"revoked": 0, "note": "no change (last valid key is protected)"}
+    await audit_event(
+        "key.revoke", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": prefix, "revoked": n},
+    )
     return {"revoked": n}
 
 
