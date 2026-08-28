@@ -68,8 +68,14 @@ next step so it isn't a dead note.
   documented allowed_groups default, retrieved-chunk injection filter, admin-key fail-closed.
 - [ ] **Tenant API key rotation UX**: currently operator-driven. Next: self-service rotation
   endpoint + key expiry.
-- [ ] **Audit log**: structured logs exist but no tamper-evident audit trail of admin actions.
-  Next: append-only audit table + hash-chain.
+- [x] **Audit log**: tamper-evident, SHA-256 hash-chained `audit_log` table (app/audit.py),
+  admin-gated `GET /audit` (read) + `GET /audit/verify` (chain-integrity proof). Records
+  tenant.create / tenant.delete / key.rotate / key.revoke with a server-derived admin
+  fingerprint (raw Admin-Key is never stored). Fail-open: audit write errors never block
+  the primary operation. Covered by tests/test_security_fixes.py
+  (test_audit_log_records_admin_actions, test_audit_chain_detects_tampering). NOTE: the
+  audit trail deliberately does NOT touch the tenant-key-derived isolation path
+  (auth.py / vector_store.py tenant_id filters) — that mechanism is out of scope by design.
 - [ ] **mTLS / private network**: production should not expose /metrics/docs publicly even
   behind Admin-Key if on a public IP. Next: bind admin endpoints to an internal interface or
   require mTLS.
