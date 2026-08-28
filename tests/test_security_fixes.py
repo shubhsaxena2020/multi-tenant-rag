@@ -373,3 +373,66 @@ def test_query_degrades_on_backend_failure(client, monkeypatch):
     assert body["degraded"] is True
     assert body["results"] == []  # no context when backend is down
 
+
+# ---------------- Tamper-evident audit log ----------------
+
+def test_audit_log_records_admin_actions(client):
+    """v10: privileged admin actions are recorded in a hash-chained audit log and the
+    chain verifies clean. Endpoints are admin-gated (fail-closed)."""
+    h = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    # No audit visible without admin key.
+    assert client.get("/audit").status_code == 403
+    assert client.get("/audit/verify").status_code == 403
+    # Create + delete a tenant -> two chained entries.
+    r = client.post(f"{V}/tenants", json={"name": "audited"}, headers=h)
+    assert r.status_code == 201
+    tid = r.json()["tenant_id"]
+    assert client.delete(f"{V}/tenants/{tid}", headers=h).status_code == 200
+    # Read the log (admin-gated).
+    log = client.get("/audit", headers=h)
+    assert log.status_code == 200, log.text
+    entries = log.json()["entries"]
+    assert len(entries) >= 2
+    actions = [e["action"] for e in entries]
+    assert "tenant.create" in actions and "tenant.delete" in actions
+    # The chain starts at the GENESIS sentinel.
+    assert entries[0]["prev_hash"] == "GENESIS"
+    # verify_chain must report ok=True across the whole chain.
+    v = client.get("/audit/verify", headers=h)
+    assert v.status_code == 200
+    assert v.json()["ok"] is True, v.json()
+
+
+def test_audit_chain_detects_tampering():
+    """v10: mutating an audit row breaks the hash chain and verify() flags it."""
+    import app.audit as audit
+    import asyncio
+    from app.db import init_db
+
+    asyncio.run(init_db())
+    # Seed a couple of genuine entries.
+    asyncio.run(audit.append_audit("tenant.create", "admin:seed", target="t_x"))
+    asyncio.run(audit.append_audit("key.rotate", "admin:seed", target="t_x"))
+    before = asyncio.run(audit.verify_chain())
+    assert before["ok"] is True
+
+    # Tamper: rewrite the `actor` of the first real row and flip its meta so the
+    # stored row_hash no longer matches the recomputed canonical payload.
+    from app.db import get_session_maker
+    from sqlalchemy import select
+
+    maker = get_session_maker()
+    import asyncio as _a
+
+    async def _tamper():
+        async with maker() as s:
+            row = (await s.execute(select(audit.AuditLog).order_by(audit.AuditLog.id.asc()).limit(1))).scalars().first()
+            row.actor = "attacker"
+            row.meta = '{"evil":true}'
+            await s.commit()
+
+    _a.run(_tamper())
+
+    after = asyncio.run(audit.verify_chain())
+    assert after["ok"] is False
+    assert after["first_break_id"] is not None
