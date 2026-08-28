@@ -16,6 +16,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from . import jobs as job_store
 from . import tenants
@@ -63,6 +64,7 @@ from .rbac import (
     resolve_acl,
 )
 from .retrieval import retrieve
+from .resilience import RagError, circuit_status, reset_breakers
 from .validation import (
     validate_content,
     validate_content_type,
@@ -86,6 +88,42 @@ app = FastAPI(
     openapi_url=None,  # root has no schema; /api/v1 owns the versioned contract
 )
 app.add_middleware(MetricsMiddleware)
+
+
+# ---------------- Global exception handlers (v9-1 graceful degradation) ----------------
+# A Qdrant/embedder/reranker outage used to produce raw HTTP 500 stack traces on every
+# chatbot query. These handlers convert backend failures into a clean, friendly response
+# carrying `degraded: true` instead of crashing — so client chatbots look professional
+# during any infra hiccup.
+@app.exception_handler(RagError)
+async def _rag_error_handler(request: Request, exc: RagError):
+    log.warning(
+        "rag_error",
+        extra={"path": request.url.path, "error_type": type(exc).__name__,
+               "detail": exc.public_detail},
+    )
+    status_code = 503 if exc.degraded else 500
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": exc.public_detail,
+            "degraded": exc.degraded,
+            "detail": exc.internal if exc.internal else exc.public_detail,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error_handler(request: Request, exc: Exception):
+    # Last-resort: never leak raw exception text/stack to clients. Log type only.
+    if isinstance(exc, RagError):
+        return await _rag_error_handler(request, exc)
+    log.error("unhandled_error", extra={"path": request.url.path, "error_type": type(exc).__name__})
+    return JSONResponse(
+        status_code=500,
+        content={"error": "internal error", "degraded": False,
+                 "detail": type(exc).__name__},
+    )
 
 v1 = FastAPI(
     title="RAG Service API",
@@ -128,6 +166,19 @@ def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, defau
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "rag-service", "version": "1.0.0"}
+
+
+@app.get("/health/deps")
+def health_deps():
+    """Dependency/circuit-breaker status for ops dashboards (v9-1 resilience)."""
+    return {
+        "status": "ok",
+        "circuit_breakers": {
+            "qdrant": circuit_status("qdrant"),
+            "embedder": circuit_status("embedder"),
+            "reranker": circuit_status("reranker"),
+        },
+    }
 
 
 @app.get("/health/ready")
@@ -352,10 +403,18 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
 
     acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
-    hits = retrieve(
-        auth.tenant_id, rewritten, top_k=body.top_k,
-        candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
-    )
+    hits = []
+    degraded = False
+    try:
+        hits = retrieve(
+            auth.tenant_id, rewritten, top_k=body.top_k,
+            candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
+        )
+    except RagError as exc:
+        # Backend degraded (Qdrant/embedder/reranker). Return a clean, contract-shaped
+        # response with degraded=True rather than a 500 stack trace.
+        log.warning("query_degraded", extra={"tenant_id": auth.tenant_id, "error_type": type(exc).__name__})
+        degraded = True
     # Filter out any chunks that contain injection
     original_len = len(hits)
     hits = [hit for hit in hits if not detect_injection(hit["text"])]
@@ -413,6 +472,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
         out_of_scope=not in_scope, injection_detected=injection,
+        degraded=degraded,
     )
 
 

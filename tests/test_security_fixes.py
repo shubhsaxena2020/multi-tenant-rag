@@ -294,3 +294,82 @@ def test_retrieved_chunk_injection_filtered(client):
     filtered = [h for h in hits if not detect_injection(h["text"])]
     assert len(filtered) == 1
     assert filtered[0]["chunk_id"] == "c1"
+
+
+# ---------------- v9-1: graceful degradation & resilience ----------------
+
+def test_circuit_breaker_trips_and_recovers():
+    """v9-1: after N failures the qdrant breaker trips OPEN (fast-fail) then recovers."""
+    from app.resilience import circuit_status, reset_breakers, with_retry, CircuitOpen
+
+    reset_breakers()
+
+    def boom():
+        raise RuntimeError("qdrant down")
+
+    # First cb_failure_threshold (5) attempts record failures; the 6th sees OPEN.
+    for _ in range(5):
+        try:
+            with_retry("qdrant", boom, max_attempts=1)
+        except Exception:
+            pass
+    assert circuit_status("qdrant") == "open"
+    # Next call must fast-fail with CircuitOpen (no retry/backoff delay).
+    import pytest
+    with pytest.raises(CircuitOpen):
+        with_retry("qdrant", boom, max_attempts=1)
+    # A success resets the breaker.
+    reset_breakers()
+    assert circuit_status("qdrant") == "closed"
+    assert with_retry("qdrant", lambda: "ok", max_attempts=1) == "ok"
+
+
+def test_reranker_falls_back_on_failure(client, monkeypatch):
+    """v9-1: if the real reranker throws, retrieval falls back to ScoreReranker (no 500)."""
+    from app.rerank import ScoreReranker, FlashRankReranker
+
+    # Make the real reranker throw at rerank time.
+    def _boom(self, query, items):
+        raise RuntimeError("reranker model OOM")
+
+    monkeypatch.setattr(FlashRankReranker, "rerank", _boom)
+
+    # With a tenant that has ingested docs, a broken reranker must NOT 500 — retrieval
+    # must fall back to the deterministic score sort (ScoreReranker) and still return hits.
+    r = client.post(f"{V}/tenants", json={"name": "rkfb"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+    ingest = client.post(
+        f"{V}/rkfb/documents", headers=auth,
+        json={"title": "facts", "content": "Paris is the capital of France. Cats are mammals.", "content_type": "text"},
+    )
+    assert ingest.status_code == 201, ingest.text
+    q = client.post(f"{V}/rkfb/query", headers=auth, json={"question": "capital of France?", "rerank": True, "generate": False})
+    assert q.status_code == 200, q.text
+    body = q.json()
+    # Fallback path still returns the best (highest-score) chunk first.
+    assert len(body["results"]) >= 1
+    assert "Paris" in body["results"][0]["text"]
+
+
+def test_query_degrades_on_backend_failure(client, monkeypatch):
+    """v9-1: a Qdrant outage returns degraded=True with HTTP 200, not a 500 stack trace."""
+    from app.main import retrieve
+    from app.resilience import RagError, reset_breakers
+
+    reset_breakers()
+    # Simulate backend failure (e.g. Qdrant circuit breaker tripped).
+    def _fail(*a, **k):
+        raise RagError("qdrant temporarily unavailable (degraded mode)")
+
+    monkeypatch.setattr("app.main.retrieve", _fail)
+
+    r = client.post(f"{V}/tenants", json={"name": "deg"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+    q = client.post(f"{V}/deg/query", headers=auth, json={"question": "anything", "generate": True})
+    assert q.status_code == 200, q.text
+    body = q.json()
+    assert body["degraded"] is True
+    assert body["results"] == []  # no context when backend is down
+

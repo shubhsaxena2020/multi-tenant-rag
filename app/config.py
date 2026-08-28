@@ -52,6 +52,19 @@ class Settings(BaseSettings):
     # only operator secret; 32 raw bytes (base64 or 64-hex). Unset = pass-through (dev).
     master_encryption_key: str = ""
 
+    # Qdrant client timeout (seconds) — bounds every vector call so a sick Qdrant
+    # hangs a single request instead of the whole replica (v9-1 resilience).
+    qdrant_timeout: float = 10.0
+
+    # Resilience: retry + circuit breaker (v9-1 graceful degradation).
+    retry_max_attempts: int = 3
+    retry_base_delay_s: float = 0.2
+    retry_max_delay_s: float = 2.0
+    # Circuit breaker: after this many consecutive failures on a dependency, the
+    # breaker trips OPEN and fails fast for cb_cooldown_s, then half-opens to probe.
+    cb_failure_threshold: int = 5
+    cb_cooldown_s: float = 30.0
+
     # Qdrant collection naming
     collection_prefix: str = "rag"
 

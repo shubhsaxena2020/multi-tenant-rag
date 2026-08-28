@@ -164,6 +164,11 @@ class QueryResponse(BaseModel):
         default=False,
         description="True when the user turn matched an injection/jailbreak guardrail pattern.",
     )
+    degraded: bool = Field(
+        default=False,
+        description="True when a backend dependency (Qdrant/embedder/reranker) was degraded or "
+        "unavailable and the service returned a best-effort response instead of failing.",
+    )
 
 
 # ---------- Eval ----------

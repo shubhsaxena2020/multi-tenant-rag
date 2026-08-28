@@ -29,6 +29,7 @@ from qdrant_client.models import (
 
 from . import crypto
 from .config import get_settings
+from .resilience import RagError, circuit_status, with_retry
 
 _BATCH = 256
 _client: QdrantClient | None = None
@@ -54,7 +55,7 @@ def _build_client() -> QdrantClient:
     return QdrantClient(
         url=url,
         api_key=s.qdrant_api_key or None,
-        timeout=10,
+        timeout=int(s.qdrant_timeout),
         # connection pooling handled internally by qdrant_client
     )
 
@@ -200,9 +201,15 @@ def search_dense(
     if acl_filter is not None and acl_filter.must is not None:
         # Combine the tenant filter with the acl_filter.
         filter_.must.extend(acl_filter.must)
-    resp = client.query_points(
-        name, query=vector, limit=limit, score_threshold=score_threshold, query_filter=filter_
-    )
+    try:
+        resp = with_retry(
+            "qdrant",
+            lambda: client.query_points(
+                name, query=vector, limit=limit, score_threshold=score_threshold, query_filter=filter_
+            ),
+        )
+    except RagError:
+        raise
     return [_hit(p) for p in resp.points]
 
 
@@ -220,9 +227,16 @@ def search_sparse(
     )
     if acl_filter is not None and acl_filter.must is not None:
         filter_.must.extend(acl_filter.must)
-    resp = client.query_points(
-        name, query=_sparse_vec(sparse), using="text", limit=limit, score_threshold=score_threshold, query_filter=filter_
-    )
+    try:
+        resp = with_retry(
+            "qdrant",
+            lambda: client.query_points(
+                name, query=_sparse_vec(sparse), using="text", limit=limit,
+                score_threshold=score_threshold, query_filter=filter_
+            ),
+        )
+    except RagError:
+        raise
     return [_hit(p) for p in resp.points]
 
 
@@ -307,12 +321,18 @@ def search_hybrid(
             rrf_params.weights = rrf_weights
         fusion_query = models.RrfQuery(rrf=rrf_params)
     
-    # Execute hybrid query
-    resp = client.query_points(
-        collection_name=name,
-        prefetch=[dense_prefetch, sparse_prefetch],
-        query=fusion_query,
-        limit=limit,
-    )
-    
+    # Execute hybrid query (bounded by retry + circuit breaker; degrades instead of 500s)
+    try:
+        resp = with_retry(
+            "qdrant",
+            lambda: client.query_points(
+                collection_name=name,
+                prefetch=[dense_prefetch, sparse_prefetch],
+                query=fusion_query,
+                limit=limit,
+            ),
+        )
+    except RagError:
+        raise  # let the global handler turn this into a degraded response
+
     return [_hit(p) for p in resp.points]

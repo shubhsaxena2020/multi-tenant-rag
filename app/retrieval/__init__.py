@@ -19,6 +19,9 @@ from ..config import get_settings
 from ..embed import get_embedder
 from ..rerank import get_reranker
 from ..vector_store import search_dense, search_sparse
+from ..observability import get_logger
+
+log = get_logger("rag")
 
 
 def _rrf(results_lists: list[list[dict]], k: int = 60) -> list[dict]:
@@ -79,5 +82,14 @@ def retrieve(
     )
     
     if rerank:
-        fused = reranker.rerank(question, fused)
+        try:
+            fused = reranker.rerank(question, fused)
+        except Exception as e:  # noqa: BLE001
+            # Degrade gracefully: if the real reranker fails (model load, OOM), fall
+            # back to the deterministic score sort so the chatbot still answers instead
+            # of 500-ing. Log the type only (never the raw traceback).
+            log.warning("reranker_fallback", extra={"error_type": type(e).__name__})
+            from ..rerank import ScoreReranker
+
+            fused = ScoreReranker().rerank(question, fused)
     return fused
