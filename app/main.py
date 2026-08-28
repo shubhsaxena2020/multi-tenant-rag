@@ -633,5 +633,54 @@ async def run_eval(tenant: str, auth: TenantDep, request: Request,
     return _O(**rep.__dict__)
 
 
+@v1.post("/{tenant}/eval/quality", response_model=dict)
+async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
+                     top_k: int = 8, candidate_k: int = 30, rerank: bool = True,
+                     generate_answer: bool = True, persist: bool = True):
+    """v9-4: evaluate answer QUALITY (faithfulness + relevancy) via self-hosted LLM judge,
+    plus classic retrieval metrics. Persists a run to the trend history when persist=True."""
+    rate_limit(request, auth.tenant_id)
+    from .eval import evaluate_quality, load_golden_set, save_eval_run
+
+    items = await load_golden_set(auth.tenant_id)
+    if not items:
+        raise HTTPException(status_code=400, detail="no golden set; PUT /eval/set first")
+    rep = evaluate_quality(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k,
+                           rerank=rerank, generate_answer=generate_answer)
+    out = {**rep.__dict__}
+    if persist:
+        rid = await save_eval_run(auth.tenant_id, rep, run_kind="manual_quality")
+        out["run_id"] = rid
+    return out
+
+
+@v1.get("/{tenant}/eval/runs", response_model=list[dict])
+async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+    """v9-4: recent eval run history (trend tracking) for this tenant."""
+    rate_limit(request, auth.tenant_id)
+    from .eval import load_eval_runs
+
+    return await load_eval_runs(auth.tenant_id, limit=limit)
+
+
+@v1.post("/{tenant}/eval/golden/auto", response_model=dict)
+async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request,
+                      n: int = 3):
+    """v9-4: auto-generate golden QA pairs from a provided document via the LLM judge.
+    Body: {"title": str, "text": str}. Returns generated EvalItems (and optionally saves)."""
+    rate_limit(request, auth.tenant_id)
+    from .eval import JudgeLLM, save_golden_set
+
+    title = body.get("title", "")
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    judge = JudgeLLM()
+    items = judge.generate_golden(title, text, n=n)
+    if body.get("save"):
+        await save_golden_set(auth.tenant_id, items)
+    return {"generated": [it.__dict__ for it in items], "judge_available": judge.available}
+
+
 # Mount the versioned API
 app.mount("/api/v1", v1)
