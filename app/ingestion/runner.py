@@ -35,9 +35,12 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
         loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
     except Exception as e:  # noqa: BLE001
         log.exception("ingest_job_failed")
-        loop.run_until_complete(jobs.update_job(job_id, status="failed", error=str(e)[:2000]))
+        # Sanitize error before persisting/logging (G): keep type + short message,
+        # never the full traceback/raw exception text (could leak internal detail).
+        safe_err = f"{type(e).__name__}: {str(e)[:200]}"
+        loop.run_until_complete(jobs.update_job(job_id, status="failed", error=safe_err))
         INGEST_JOBS.labels(status="failed").inc()
-        log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": str(e)[:2000]})
+        log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": safe_err})
     finally:
         loop.close()
 

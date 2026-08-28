@@ -13,9 +13,15 @@ class TenantCreate(BaseModel):
     plan: str = "standard"  # standard | enterprise (siloed)
     allowed_groups: list[str] | None = Field(
         default=None,
-        description="Server-side RBAC: sub-user group labels this tenant is provisioned to use. "
-        "None/'*' allows any group label; an explicit list restricts which acl groups the "
-        "tenant's calls may request (prevents self-escalation). Operator/admin-set only.",
+        description=(
+            "Server-side RBAC: sub-user group labels this tenant is provisioned to use. "
+            "SECURITY (v9-SEC-D): the default (None/'*') grants NO isolation between "
+            "sub-users within the tenant — every caller can request any group label, so "
+            "document-level RBAC provides zero intra-tenant separation. To enable real "
+            "sub-user isolation, operators MUST pass an explicit group list (e.g. "
+            "['support','billing']) and ingest docs with a matching acl. '*' is only safe "
+            "for single-user tenants. Operator/admin-set only."
+        ),
     )
 
 

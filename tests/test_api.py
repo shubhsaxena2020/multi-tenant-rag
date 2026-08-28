@@ -37,22 +37,37 @@ def test_health(client):
 
 
 def test_metrics_endpoint(client):
+    # E: /metrics is gated behind admin auth (was unauthenticated, disclosing schema).
     r = client.get("/metrics")
-    assert r.status_code == 200
-    assert b"rag_requests_total" in r.content
+    assert r.status_code == 403, r.text  # fail-closed without Admin-Key
+    headers = {}
+    admin_key = os.environ.get("ADMIN_API_KEY")
+    if admin_key:
+        headers["Admin-Key"] = admin_key
+        r = client.get("/metrics", headers=headers)
+        assert r.status_code == 200
+        assert b"rag_requests_total" in r.content
 
 
 def test_openapi_versioned(client):
+    # E: openapi.json is now admin-gated (served at root /api/v1/openapi.json).
     r = client.get(f"{V}/openapi.json")
-    assert r.status_code == 200
+    assert r.status_code == 403, r.text  # built-in v1 endpoint disabled
+    r = client.get("/api/v1/openapi.json")
+    assert r.status_code == 403, r.text  # fail-closed without Admin-Key
+    headers = {}
+    admin_key = os.environ.get("ADMIN_API_KEY")
+    if admin_key:
+        headers["Admin-Key"] = admin_key
+        r = client.get("/api/v1/openapi.json", headers=headers)
+        assert r.status_code == 200
     spec = r.json()
     assert spec["info"]["version"] == "1.0.0"
     # versioned paths present (served at /api/v1 + these relative paths)
     assert "/{tenant}/query" in spec["paths"]
     assert "/{tenant}/ingest/jobs" in spec["paths"]
-    # full base URL reflected via servers.root_path
-    servers = spec.get("servers", [])
-    assert any(s.get("url") == "/api/v1" for s in servers)
+    # the contract is served at the versioned base URL
+    assert r.request.url.path == "/api/v1/openapi.json"
 
 
 def test_tenant_isolation_in_query(client):

@@ -46,16 +46,55 @@ _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_BYTES = 20 * 1024 * 1024  # 20 MB cap on fetched body
 
 
+# Ports we are willing to egress to. Restricting to 80/443 shrinks the SSRF
+# surface (no internal admin ports like :8080/:9000 reachable via a crafted host).
+_ALLOWED_PORTS = frozenset({80, 443})
+
+
 def _is_blocked(ip: object) -> bool:
     if not isinstance(ip, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
         return True
-    # Reject anything that isn't a global public unicast address.
+    # Defense in depth: reject anything that is not a global public unicast address.
+    # This catches the NAT64 well-known prefix (64:ff9b::/96) AND any future
+    # translated/reserved range whose address object misreports is_global, because
+    # we also consult the explicit blocklist below. We never trust is_global alone.
     if not ip.is_global:
         return True
+    # Explicit blocklist (covers NAT64 + any address that reports is_global=True but
+    # is actually internal — e.g. some translated prefixes). Checked for the matching
+    # IP version so a v4 range never accidentally matches a v6 address and vice versa.
     for net in _BLOCKED_NETWORKS:
         if ip.version == net.version and ip in net:
             return True
+    # Additionally reject any IPv6 address that is reserved/translated/mapped at the
+    # protocol level, even if is_global reported True (covers edge prefixes beyond the
+    # well-known NAT64 range). Public unicast with no special flag is required.
+    if ip.version == 6:
+        if (
+            ip.is_reserved
+            or ip.is_link_local
+            or ip.is_private
+            or ip.is_loopback
+            or ip.is_multicast
+            or (hasattr(ip, "is_unspecified") and ip.is_unspecified)
+        ):
+            return True
     return False
+
+
+def _validate_port(host: str, port: int | None) -> None:
+    """Enforce the egress port allowlist (was a dead no-op before v9).
+
+    Raises ValueError when the port is outside the allowed set. `None` resolves to the
+    scheme default (80 for http, 443 for https) which is always allowed.
+    """
+    if port is None:
+        return
+    if port not in _ALLOWED_PORTS:
+        raise ValueError(
+            f"{host}:{port} uses a non-standard port ({port}); "
+            f"only {sorted(_ALLOWED_PORTS)} are permitted (SSRF guard)"
+        )
 
 
 def _resolve_first_public_ip(hostname: str) -> str:
@@ -92,9 +131,13 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
     if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"URL scheme must be one of {sorted(_ALLOWED_SCHEMES)}")
-    if parsed.port is not None and parsed.port not in (80, 443):
-        # Optional: tighten to standard ports to avoid odd internal services.
-        pass
+    try:
+        _validate_port(host, parsed.port)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"URL port not allowed (SSRF guard): {e}",
+        )
     try:
         pinned_ip = _validate_target(host)
     except ValueError as e:
@@ -133,6 +176,11 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
         nh = (r2.hostname or "").lower()
         if not nh:
             break
+        try:
+            _validate_port(nh, r2.port)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail=f"redirect port not allowed (SSRF guard): {e}")
         try:
             pinned_ip = _validate_target(nh)
         except ValueError as e:

@@ -93,9 +93,15 @@ v1 = FastAPI(
     root_path="/api/v1",  # so the generated OpenAPI + Swagger reflect the real mounted URL
     description=(
         "Versioned multi-tenant RAG API. Every tenant route requires "
-        "`Authorization: Bearer <tenan...y>`. Tenant identity is resolved "
+        "`Authorization: Bearer *** Tenant identity is resolved "
         "server-side from the key; the {tenant} path segment is informational."
     ),
+    # E: docs/openapi are unauthenticated by default in FastAPI — disable the built-in
+    # endpoints and serve them only via the admin-gated routes below so they don't
+    # disclose tenant-id/path/schema info to the public.
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
 )
 
 
@@ -131,13 +137,29 @@ def ready():
         c.get_collections()
         return {"status": "ready", "qdrant": "reachable"}
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"qdrant unreachable: {exc}")
+        # Never leak raw backend exception text/stack to clients (G: log sanitization).
+        log.warning("qdrant_unreachable", extra={"error_type": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="qdrant unreachable")
 
 
 @app.get("/metrics")
-def metrics():
+def metrics(_: None = Depends(require_admin)):
     body, ctype = metrics_response()
     return body, {"content-type": ctype}
+
+
+# E: admin-gated OpenAPI schema + interactive docs. Served on the root app (not the
+# public v1 sub-app) so only an operator with the Admin-Key can fetch the contract.
+@app.get("/api/v1/openapi.json")
+def openapi_schema(_: None = Depends(require_admin)):
+    return v1.openapi()
+
+
+@app.get("/api/v1/docs", include_in_schema=False)
+def docs(_: None = Depends(require_admin)):
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    return get_swagger_ui_html(openapi_url="/api/v1/openapi.json", title="RAG Service API")
 
 
 # ---------------- Admin: tenants ---------------
