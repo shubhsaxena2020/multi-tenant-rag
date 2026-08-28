@@ -15,6 +15,9 @@ import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 LOG_PATH = os.environ.get("RAG_ALERT_LOG", "/var/log/rag-alerts.log")
+# Fall back to a writable location if the default isn't writable (e.g. unprivileged VPS user).
+if not os.access(os.path.dirname(LOG_PATH) or ".", os.W_OK):
+    LOG_PATH = os.path.join(os.path.expanduser("~"), "rag-alerts.log")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger("alert-webhook")
 

@@ -25,9 +25,11 @@ next step so it isn't a dead note.
   neighbors. Next: store quota counters in the tenant registry; return 429 with Retry-After.
 - [ ] **Connection pooling / worker tuning**: verify uvicorn workers × Qdrant pool sizing
   under load. Next: load-test with k6/locust; tune `workers` and `qdrant_timeout`.
-- [ ] **Structured metrics cardinality audit**: MetricsMiddleware normalizes paths (good),
-  but confirm no unbounded label still leaks (e.g. tenant_id in any metric). Next: grep all
-  `.labels(` calls for tenant_id/raw-id usage.
+- [DONE] **Structured metrics cardinality audit**: grep of every `.labels()` call in app/ confirms
+  NO unbounded labels — all use bounded values (INGEST_JOBS status set, SLO_AVAILABILITY
+  outcome ok/error, DEGRADED_RESPONSES/REQUEST_* use the NORMALIZED route template `label_path`,
+  CIRCUIT_OPEN_EVENTS uses fixed dependency set). tenant_id is never a metric label. v8 #5 verified.
+- [ ] **Horizontal scaling of ingestion workers**: the in-memory job queue (app/db.py jobs)
 
 ## Product / Client-readiness
 
@@ -37,8 +39,11 @@ next step so it isn't a dead note.
 - [DONE] **Continuous eval & answer quality**: self-hosted LLM-as-judge (faithfulness +
   answer_relevancy), trend history, golden auto-gen. Next: build a Grafana panel over
   eval_runs; add scheduled nightly eval; add more metrics (context_precision, answer_correctness).
-- [DONE] **SLOs/alerting**: /health/slo + deploy/alert.rules.yml. Next: ship a Prometheus
-  scrape config + Grafana dashboard JSON in deploy/.
+- [DONE] **SLOs/alerting**: /health/slo + deploy/alert.rules.yml + a Grafana dashboard JSON
+  (deploy/grafana/dashboards/rag-svc.json) + a NATIVE Prometheus/Alertmanager/webhook deploy
+  (deploy/native/, no Docker needed). Prometheus :9090 / Alertmanager :9093 / webhook :9099 are
+  LIVE on this VPS; rag-app target shows DOWN (port 8007 not yet restarted) and RAGAppDown fires
+  + is delivered to /home/ubuntu/monitoring/rag-alerts.log — P0 detect-within-minutes verified.
 - [ ] **Multi-language / i18n**: widget + answers assume English. Next: detect query lang,
   pick embedder/LLM accordingly, localize widget copy.
 - [ ] **Conversation memory UI**: session store exists (get_session_store) but the widget

@@ -1,0 +1,31 @@
+# Alertmanager config for NATIVE (non-Docker) deployment. Mirror of deploy/alertmanager.yml
+# but the webhook URL uses localhost (the `alert-webhook` compose service name doesn't
+# resolve natively). Bring up with /home/ubuntu/monitoring/start_monitoring.sh.
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: log
+  group_by: ["alertname", "service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 1h
+  routes:
+    - matchers:
+        - severity = "page"
+      receiver: log
+    - matchers:
+        - severity = "warn"
+      receiver: log
+
+receivers:
+  - name: log
+    webhook_configs:
+      - url: "http://localhost:9099/alert"
+        send_resolved: true
+    # --- Production alternative (uncomment + set env): ---
+    # slack_configs:
+    #   - api_url: "${SLACK_WEBHOOK_URL}"
+    #     channel: "#rag-alerts"
+    #     title: "{{ .GroupLabels.alertname }}"
+    #     text: "{{ .CommonAnnotations.description }}"
