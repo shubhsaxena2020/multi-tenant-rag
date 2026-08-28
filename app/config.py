@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -101,6 +102,20 @@ class Settings(BaseSettings):
     retrieval_confidence_threshold: float = 0.15
     rewrite_enabled: bool = True
     injection_guard_enabled: bool = True
+
+    # Embeddable widget (v9-3): origins allowed to embed the chat widget via
+    # <iframe>. Enforced with CSP frame-ancestors. Empty = no embedding allowed.
+    allowed_embed_origins: list[str] = []
+
+    @field_validator("allowed_embed_origins", mode="before")
+    @classmethod
+    def _empty_str_to_list(cls, v):
+        if isinstance(v, str):
+            v = v.strip()
+            if v == "":
+                return []
+            # pydantic will JSON-decode non-empty strings; leave them for that path.
+        return v
 
 
 @lru_cache

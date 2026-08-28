@@ -11,12 +11,13 @@ per-IP rate limiting on every tenant route.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import jobs as job_store
 from . import tenants
@@ -28,7 +29,7 @@ from .conversation import (
     get_session_store,
     rewrite_query,
 )
-from .generation import generate_answer
+from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
 from .models import (
@@ -191,6 +192,37 @@ def ready():
         # Never leak raw backend exception text/stack to clients (G: log sanitization).
         log.warning("qdrant_unreachable", extra={"error_type": type(exc).__name__})
         raise HTTPException(status_code=503, detail="qdrant unreachable")
+
+
+# ---------------- v9-3: embeddable widget ----------------
+def _frame_ancestors_csp() -> str:
+    """CSP frame-ancestors from allowed_embed_origins. Empty list => 'none' (no embedding)."""
+    origins = get_settings().allowed_embed_origins
+    if not origins:
+        return "frame-ancestors 'none'"
+    return "frame-ancestors " + " ".join(origins)
+
+
+@app.get("/widget.js")
+def widget_js():
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "widget.js"
+    body = p.read_text(encoding="utf-8")
+    return HTMLResponse(body, media_type="application/javascript",
+                        headers={"Content-Security-Policy": _frame_ancestors_csp()})
+
+
+@app.get("/widget.html")
+def widget_html():
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "widget.html"
+    body = p.read_text(encoding="utf-8")
+    # The iframe itself is locked to allowed embed origins; the inner page gets a
+    # permissive-enough CSP for its own scripts but no frame nesting beyond what we set.
+    return HTMLResponse(body, media_type="text/html",
+                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"})
 
 
 @app.get("/metrics")
@@ -476,7 +508,76 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     )
 
 
-# ---------------- API key management (tenant-scoped rotation) ----------------
+@app.post("/api/v1/{tenant}/query/stream")
+def query_stream(
+    tenant: str,
+    body: QueryRequest,
+    auth: TenantDep,
+):
+    """Server-Sent Events streaming query (v9-3). Emits:
+      event: sources  data: <json list of retrieved chunks (titles+snippets)>
+      event: token    data: <answer token delta>   (repeated)
+      event: done     data: <json {tenant_id, out_of_scope, injection_detected, degraded}>
+      event: error    data: <json {error}>           (on failure, instead of done)
+    A client can subscribe with EventSource (note: EventSource is GET-only; for POST
+    payloads use fetch() + ReadableStream on the client side — see widget.js).
+    """
+    # tenant identity is derived server-side from the Bearer key (auth.tenant_id);
+    # the {tenant} path segment is a URL namespace and is not trusted (matches /query).
+    _ = tenant
+
+    def _sse():
+        try:
+            rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+            injection = bool(body.question) and detect_injection(body.question)
+            acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
+            hits = []
+            degraded = False
+            try:
+                hits = retrieve(
+                    auth.tenant_id, rewritten, top_k=body.top_k,
+                    candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
+                )
+            except RagError as exc:
+                log.warning("query_stream_degraded", extra={"tenant_id": auth.tenant_id, "error_type": type(exc).__name__})
+                degraded = True
+            hits = [h for h in hits if not detect_injection(h["text"])]
+            in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
+
+            sources = [{"chunk_id": h["chunk_id"], "title": h.get("title"),
+                        "snippet": h["text"][:280]} for h in hits[:body.top_k]]
+            yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
+
+            answer = None
+            if body.generate:
+                if injection:
+                    answer = "I can't follow those instructions. Ask me a question about the documented content and I'll help."
+                elif not in_scope:
+                    answer = "I don't have information on that in the available documents. Let me connect you with support, or try rephrasing your question."
+                else:
+                    collected: list[str] = []
+                    for tok in stream_answer(rewritten, hits):
+                        collected.append(tok)
+                        yield f"event: token\ndata: {json.dumps(tok)}\n\n"
+                    answer = "".join(collected)
+
+            if body.session_id:
+                store = get_session_store()
+                store.append(body.session_id, "user", body.question)
+                store.append(body.session_id, "assistant", answer or (hits[0]["text"] if hits else ""))
+
+            done = {"tenant_id": auth.tenant_id, "out_of_scope": (not in_scope),
+                    "injection_detected": injection, "degraded": degraded}
+            yield f"event: done\ndata: {json.dumps(done)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {"error": getattr(exc, "public_detail", type(exc).__name__)}
+            yield f"event: error\ndata: {json.dumps(err)}\n\n"
+
+    return StreamingResponse(_sse(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
     """Issue a new API key for this tenant. The old key remains valid until revoked."""
