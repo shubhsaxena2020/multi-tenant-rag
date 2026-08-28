@@ -26,6 +26,9 @@ dependencies = [
 real = ["sentence-transformers", "trafilatura"]
 test = ["pytest", "httpx", "pytest-timeout", "ruff"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
