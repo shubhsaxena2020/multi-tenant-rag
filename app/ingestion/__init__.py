@@ -12,6 +12,7 @@ the async job runner.
 from __future__ import annotations
 
 import uuid
+from typing import Callable
 
 from .. import tenants
 from ..config import get_settings
@@ -31,13 +32,13 @@ def fetch_url(url: str, timeout: float = 20.0) -> str:
     return safe_fetch_url(url, timeout=timeout)
 
 
-def _enforce_quota(tenant_id: str, n_new: int) -> None:
+async def _enforce_quota(tenant_id: str, n_new: int) -> None:
     from fastapi import HTTPException, status
 
     s = get_settings()
     if s.tenant_chunk_quota <= 0:
         return
-    used = tenants.chunk_count(tenant_id)
+    used = await tenants.chunk_count_async(tenant_id)
     if used + n_new > s.tenant_chunk_quota:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -48,13 +49,13 @@ def _enforce_quota(tenant_id: str, n_new: int) -> None:
         )
 
 
-def ingest_core(
+async def ingest_core(
     tenant_id: str,
     title: str,
     text: str,
     content_type: str = "text",
     metadata: dict | None = None,
-    on_progress=None,
+    on_progress: Callable[[int, int], None] | None = None,
     acl: list[str] | None = None,
 ) -> dict:
     embedder = get_embedder()
@@ -62,12 +63,16 @@ def ingest_core(
     texts = [c.text for c in chunks]
     total = len(texts)
 
-    _enforce_quota(tenant_id, total)
+    await _enforce_quota(tenant_id, total)
 
     dense: list[list[float]] = []
     sparse: list[dict[int, float]] = []
     for i in range(0, total, MAX_CHUNK_BATCH):
         batch = texts[i: i + MAX_CHUNK_BATCH]
+        # Add passage prefix for intfloat/multilingual-e5-large model
+        settings = get_settings()
+        if settings.embed_model == "intfloat/multilingual-e5-large":
+            batch = [f"passage: {text}" for text in batch]
         results = embedder.embed(batch)
         dense.extend(r.dense for r in results)
         sparse.extend(r.sparse for r in results)
@@ -83,19 +88,24 @@ def ingest_core(
         chunks=texts, dense=dense, sparse=sparse,
         base_metadata=base, content_type=content_type,
     )
-    tenants.increment_chunk_count(tenant_id, len(chunk_ids))
+    await tenants.increment_chunk_count(tenant_id, len(chunk_ids))
     if on_progress:
         on_progress(total, total)
     return {"doc_id": doc_id, "title": title, "chunk_count": len(chunk_ids)}
 
 
-def ingest_text(
+async def ingest_text(
     tenant_id: str, title: str, text: str, content_type: str = "text",
-    metadata: dict | None = None, on_progress=None, acl: list[str] | None = None,
+    metadata: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
+    acl: list[str] | None = None,
 ) -> dict:
-    return ingest_core(tenant_id, title, text, content_type, metadata, on_progress, acl)
+    return await ingest_core(tenant_id, title, text, content_type, metadata, on_progress, acl)
 
 
-def ingest_url(tenant_id: str, url: str, title: str | None = None, metadata: dict | None = None, on_progress=None, acl: list[str] | None = None) -> dict:
+async def ingest_url(
+    tenant_id: str, url: str, title: str | None = None,
+    metadata: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
+    acl: list[str] | None = None,
+) -> dict:
     body = fetch_url(url)
-    return ingest_core(tenant_id, title or url, body, "html", metadata, on_progress, acl)
+    return await ingest_core(tenant_id, title or url, body, "html", metadata, on_progress, acl)

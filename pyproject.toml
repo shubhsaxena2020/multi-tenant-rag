@@ -17,6 +17,9 @@ dependencies = [
     "python-multipart",
     "prometheus-client",
     "cryptography",
+    "sqlalchemy>=2.0",
+    "asyncpg",
+    "aiosqlite",
 ]
 
 [project.optional-dependencies]

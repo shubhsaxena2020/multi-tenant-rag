@@ -27,6 +27,10 @@ class TenantOut(BaseModel):
     created_at: datetime
     chunk_count: int = 0
     allowed_groups: list[str] = ["*"]
+    
+
+# Alias for backward compatibility with db layer
+TenantRow = TenantOut
 
 
 class KeyInfo(BaseModel):

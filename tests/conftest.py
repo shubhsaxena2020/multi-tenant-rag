@@ -1,5 +1,6 @@
 """Shared pytest fixtures for the RAG service test suite."""
 import os
+import tempfile
 import time
 
 import pytest
@@ -11,10 +12,10 @@ from fastapi.testclient import TestClient
 # so it cannot override these defaults.
 os.environ["QDRANT_URL"] = ":memory:"
 os.environ.pop("REDIS_URL", None)
+os.environ["ADMIN_API_KEY"] = "test-admin-key-for-tests"
 os.environ["USE_REAL_EMBEDDER"] = "0"
 os.environ["USE_REAL_RERANKER"] = "0"
-os.environ["DB_URL"] = "sqlite:///./test_rag_tenants.db"
-os.environ["MASTER_ENCRYPTION_KEY"] = "AAAAAAt3stEnvMasterKey0123456789ABCDEF"
+os.environ["MASTER_ENCRYPTION_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
 @pytest.fixture(autouse=True)
@@ -24,28 +25,53 @@ def _clear_settings_cache():
     # Also reset the process-wide rate limiter so per-IP/per-tenant buckets don't
     # accumulate across tests in the same session. Force in-memory mode for determinism.
     import os
+    import asyncio
 
     from app.config import get_settings
     from app.ratelimit import reset_limiter
     from app.vector_store import reset_client
 
-    os.environ.pop("REDIS_URL", None)
-    get_settings.cache_clear()
-    reset_client()
-    lim = reset_limiter("memory")
-    lim._buckets.clear()
-    yield
-    get_settings.cache_clear()
-    reset_client()
-    reset_limiter("memory")._buckets.clear()
+    # Use a temporary file for the database that gets cleaned up automatically
+    db_fd, db_path = tempfile.mkstemp(suffix=".db", prefix="test_rag_")
+    os.close(db_fd)
+    
+    try:
+        os.environ["DB_URL"] = f"sqlite:///{db_path}"
+        
+        # Clear settings cache and reset other global state.
+        get_settings.cache_clear()
+        reset_client()
+        reset_limiter("memory")  # Force in-memory limiter for tests
+        
+        # Reset the database engine and session maker to avoid cross-test contamination
+        import app.db
+        app.db._engine = None
+        app.db._session_maker = None
+        
+        # Initialize the database (async function).
+        from app.db import init_db
+        asyncio.run(init_db())
+
+        yield
+
+    finally:
+        # Teardown: remove the temporary database file and clear settings again.
+        try:
+            os.unlink(db_path)
+        except FileNotFoundError:
+            pass
+        get_settings.cache_clear()
+        reset_client()
+        reset_limiter("memory")
+        # Reset the database engine and session maker
+        import app.db
+        app.db._engine = None
+        app.db._session_maker = None
 
 
 @pytest.fixture()
 def client():
-    if os.path.exists("./test_rag_tenants.db"):
-        os.remove("./test_rag_tenants.db")
     from app.main import app
-
     with TestClient(app) as c:
         # Wait for Qdrant to be ready (health endpoint) to avoid flaky connection errors in tests.
         for _ in range(10):

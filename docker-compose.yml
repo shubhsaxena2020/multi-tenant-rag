@@ -5,8 +5,24 @@ services:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - ./qdrant_storage:/qdrant/storage
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 600s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
 
   redis:
     # Optional: shared rate-limit state when running >1 app replica.

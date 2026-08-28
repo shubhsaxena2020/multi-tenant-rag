@@ -17,7 +17,11 @@ V = "/api/v1"  # versioned tenant API prefix
 
 
 def _make_tenant(client, name="acme"):
-    r = client.post(f"{V}/tenants", json={"name": name, "plan": "standard"})
+    headers = {}
+    admin_key = os.environ.get("ADMIN_API_KEY")
+    if admin_key:
+        headers["Admin-Key"] = admin_key
+    r = client.post(f"{V}/tenants", json={"name": name, "plan": "standard"}, headers=headers)
     assert r.status_code == 201, r.text
     return r.json()
 
@@ -242,7 +246,10 @@ def test_tenant_admin_offboarding(client):
         f"{V}/acme/documents", headers=_auth(t["api_key"]),
         json={"title": "d", "content": "secret tenant data zz-99", "content_type": "text"},
     )
-    r = client.delete(f"{V}/tenants/{t['tenant_id']}")
+    r = client.delete(
+        f"{V}/tenants/{t['tenant_id']}",
+        headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")},
+    )
     assert r.status_code == 200, r.text
     assert r.json()["collection_dropped"] is True
     q = client.post(
@@ -250,7 +257,9 @@ def test_tenant_admin_offboarding(client):
         json={"question": "x", "top_k": 3},
     )
     assert q.status_code == 401, q.text
-    assert client.get(f"{V}/tenants").status_code == 200
+    assert client.get(
+        f"{V}/tenants", headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    ).status_code == 200
 
 
 def test_admin_key_blocks_tenant_creation(monkeypatch, client):
@@ -354,40 +363,29 @@ def test_tenant_chunk_quota(monkeypatch, client):
     assert "quota" in r.json()["detail"].lower()
 
 
-def test_redis_rate_limiter_enforces_shared_budget():
+def test_redis_rate_limiter_enforces_shared_budget(client):
     """Integration: when REDIS_URL is configured the limiter must enforce a single
     shared per-IP budget through the real app path (fleet-safe). Skips if no Redis."""
     import os
-
     import redis
-
     url = os.environ.get("REDIS_URL") or "redis://localhost:6379/0"
     try:
         rc = redis.Redis.from_url(url, socket_connect_timeout=2)
         rc.ping()
     except Exception:  # noqa: BLE001
         pytest.skip("Redis not available")
-
     from app.ratelimit import reset_limiter
-
     os.environ["REDIS_URL"] = url
     from app.config import get_settings
     get_settings.cache_clear()
     reset_limiter("auto")
     rc.flushdb()
-
-    from fastapi.testclient import TestClient
-
     from app.main import app
-
-    with TestClient(app) as c:
-        t = c.post(f"{V}/tenants", json={"name": "acme"}).json()
-        key = t["api_key"]
-        auth = {"Authorization": f"Bearer {key}"}
-        codes = [
-            c.post(f"{V}/acme/query", headers=auth, json={"question": "x", "top_k": 1}).status_code
-            for _ in range(130)
-        ]
+    t = _make_tenant(client, "acme")
+    key = t["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+    codes = [client.post(f"{V}/acme/query", headers=auth, json={"question": "x", "top_k": 1}).status_code
+             for _ in range(130)]
     ok = codes.count(200)
     bad = codes.count(429)
     # per-IP cap is 120; tenant creation consumes ~1, so we expect rejections once
@@ -401,7 +399,6 @@ def test_redis_rate_limiter_enforces_shared_budget():
     os.environ.pop("REDIS_URL", None)
     get_settings.cache_clear()
     reset_limiter("memory")
-
 
 def test_real_reranker_reorders_by_relevance():
     """Regression: with USE_REAL_RERANKER=1 the reranker must reorder by true relevance,

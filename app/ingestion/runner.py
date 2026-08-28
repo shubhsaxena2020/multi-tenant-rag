@@ -6,6 +6,7 @@ the error message rather than crashing the worker. Metrics + logs are emitted he
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,27 +29,60 @@ def _ensure_executor() -> ThreadPoolExecutor:
 
 
 def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        jobs.update_job(job_id, status="running", progress=0.05)
-        if kind == "url":
-            def on_progress(done, total):
-                jobs.update_job(job_id, progress=0.1 + 0.9 * (done / total), done_chunks=done, total_chunks=total)
-
-            result = ingest_url(tenant_id, payload["url"], payload.get("title"), metadata, on_progress=on_progress)
-        else:
-            def on_progress(done, total):
-                jobs.update_job(job_id, progress=done / total, done_chunks=done, total_chunks=total)
-
-            text = payload.get("text") or payload.get("content") or ""
-            result = ingest_text(tenant_id, payload.get("title", "untitled"), text, payload.get("content_type", "text"), metadata, on_progress=on_progress, acl=payload.get("acl"))
-        jobs.update_job(job_id, status="completed", progress=1.0, result_doc_id=result["doc_id"])
-        INGEST_CHUNKS.labels(tenant_id=tenant_id).inc(result["chunk_count"])
-        INGEST_JOBS.labels(tenant_id=tenant_id, status="completed").inc()
-        log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
+        loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
     except Exception as e:  # noqa: BLE001
-        jobs.update_job(job_id, status="failed", error=str(e)[:2000])
-        INGEST_JOBS.labels(tenant_id=tenant_id, status="failed").inc()
+        log.exception("ingest_job_failed")
+        loop.run_until_complete(jobs.update_job(job_id, status="failed", error=str(e)[:2000]))
+        INGEST_JOBS.labels(status="failed").inc()
         log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": str(e)[:2000]})
+    finally:
+        loop.close()
+
+
+async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None):
+    await jobs.update_job(job_id, status="running", progress=0.05)
+    progress_tasks = []
+
+    if kind == "url":
+        def on_progress(done: int, total: int):
+            # Schedule the update but keep track of the task
+            task = asyncio.create_task(jobs.update_job(
+                job_id, progress=0.1 + 0.9 * (done / total), 
+                done_chunks=done, total_chunks=total
+            ))
+            progress_tasks.append(task)
+
+        result = await ingest_url(
+            tenant_id, payload["url"], payload.get("title"), 
+            metadata, on_progress=on_progress, acl=payload.get("acl")
+        )
+    else:
+        def on_progress(done: int, total: int):
+            # Schedule the update but keep track of the task
+            task = asyncio.create_task(jobs.update_job(
+                job_id, progress=done / total, 
+                done_chunks=done, total_chunks=total
+            ))
+            progress_tasks.append(task)
+
+        text = payload.get("text") or payload.get("content") or ""
+        result = await ingest_text(
+            tenant_id, payload.get("title", "untitled"), text, 
+            payload.get("content_type", "text"), metadata, 
+            on_progress=on_progress, acl=payload.get("acl")
+        )
+
+    # Wait for all progress update tasks to complete before finishing
+    if progress_tasks:
+        await asyncio.gather(*progress_tasks, return_exceptions=True)
+
+    await jobs.update_job(job_id, status="completed", progress=1.0, result_doc_id=result["doc_id"])
+    INGEST_CHUNKS.inc(result["chunk_count"])
+    INGEST_JOBS.labels(status="completed").inc()
+    log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
 
 
 def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:

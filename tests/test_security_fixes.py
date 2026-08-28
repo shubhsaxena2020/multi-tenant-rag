@@ -59,7 +59,7 @@ def test_rbac_self_escalation_dropped(client):
 
 def test_rbac_via_api_drops_unauthorized_group(client):
     # tenant restricted to group "hr" only
-    r = client.post(f"{V}/tenants", json={"name": "corp", "allowed_groups": ["hr"]})
+    r = client.post(f"{V}/tenants", json={"name": "corp", "allowed_groups": ["hr"]}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
     assert r.status_code == 201, r.text
     key = r.json()["api_key"]
     auth = {"Authorization": f"Bearer {key}"}
@@ -121,7 +121,7 @@ def test_ingest_ratelimit_is_per_minute(client, monkeypatch):
     from app.config import get_settings
     monkeypatch.setenv("RATE_INGEST_JOBS_PER_MIN", "3")
     get_settings.cache_clear()
-    r = client.post(f"{V}/tenants", json={"name": "il"})
+    r = client.post(f"{V}/tenants", json={"name": "il"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
     key = r.json()["api_key"]
     auth = {"Authorization": f"Bearer {key}"}
     codes = []
@@ -139,7 +139,7 @@ def test_metrics_use_route_template(client):
 
     # Create a tenant (random id), then issue a tenant-scoped request so the raw path
     # contains a per-tenant id. The metric label MUST be the template, not the raw path.
-    r = client.post(f"{V}/tenants", json={"name": "mco"})
+    r = client.post(f"{V}/tenants", json={"name": "mco"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
     assert r.status_code == 201, r.text
     tid = r.json()["tenant_id"]
     key = r.json()["api_key"]
@@ -206,7 +206,7 @@ def test_injection_detection():
 
 def test_query_out_of_scope_flag(client):
     # query a term with NO ingested docs -> out_of_scope True, graceful answer
-    r = client.post(f"{V}/tenants", json={"name": "oos"})
+    r = client.post(f"{V}/tenants", json={"name": "oos"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
     key = r.json()["api_key"]
     auth = {"Authorization": f"Bearer {key}"}
     q = client.post(f"{V}/oos/query", headers=auth, json={
@@ -218,7 +218,7 @@ def test_query_out_of_scope_flag(client):
 
 
 def test_query_injection_flag(client):
-    r = client.post(f"{V}/tenants", json={"name": "inj"})
+    r = client.post(f"{V}/tenants", json={"name": "inj"}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
     key = r.json()["api_key"]
     auth = {"Authorization": f"Bearer {key}"}
     q = client.post(f"{V}/inj/query", headers=auth, json={

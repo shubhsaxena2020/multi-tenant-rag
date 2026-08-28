@@ -105,51 +105,59 @@ def evaluate(
 
 
 # ---- golden-set persistence (per tenant, in the registry DB) ----
-import sqlite3
-from pathlib import Path
+from .db import get_session_maker
+from sqlalchemy import text
+import json
+from dataclasses import asdict
 
 
-def _eval_conn():
-    # Same sqlite file as the tenant registry (v1). Uses its lock for safety.
-    from .config import get_settings
-
-    u = get_settings().db_url
-    path = u[len("sqlite:///"):]
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(path, check_same_thread=False)
-
-
-def save_golden_set(tenant_id: str, items: list[EvalItem]) -> int:
-    conn = _eval_conn()
-    with tenants._DB_LOCK:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS eval_sets ("
-            "tenant_id TEXT NOT NULL, question TEXT, relevant_doc_ids TEXT, "
-            "relevant_texts TEXT, expected_answer TEXT)"
-        )
-        conn.execute("DELETE FROM eval_sets WHERE tenant_id=?", (tenant_id,))
-        for it in items:
-            conn.execute(
-                "INSERT INTO eval_sets VALUES (?,?,?,?,?)",
-                (tenant_id, it.question, json.dumps(it.relevant_doc_ids),
-                 json.dumps(it.relevant_texts), it.expected_answer),
+async def save_golden_set(tenant_id: str, items: list[EvalItem]) -> int:
+    """Save golden set for a tenant using the same DB layer as tenants."""
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        # Create table if not exists (using raw SQL for simplicity)
+        await session.execute(text("""
+            CREATE TABLE IF NOT EXISTS eval_sets (
+                tenant_id TEXT NOT NULL, 
+                question TEXT, 
+                relevant_doc_ids TEXT, 
+                relevant_texts TEXT, 
+                expected_answer TEXT
             )
-        conn.commit()
+        """))
+        # Delete existing entries for this tenant
+        await session.execute(text("DELETE FROM eval_sets WHERE tenant_id = :tenant_id"), 
+                           {"tenant_id": tenant_id})
+        # Insert new items
+        for it in items:
+            await session.execute(text("""
+                INSERT INTO eval_sets VALUES (:tenant_id, :question, :relevant_doc_ids, :relevant_texts, :expected_answer)
+            """), {
+                "tenant_id": tenant_id,
+                "question": it.question,
+                "relevant_doc_ids": json.dumps(it.relevant_doc_ids),
+                "relevant_texts": json.dumps(it.relevant_texts),
+                "expected_answer": it.expected_answer
+            })
+        await session.commit()
     return len(items)
 
 
-def load_golden_set(tenant_id: str) -> list[EvalItem]:
-    conn = _eval_conn()
-    rows = conn.execute(
-        "SELECT question, relevant_doc_ids, relevant_texts, expected_answer "
-        "FROM eval_sets WHERE tenant_id=?", (tenant_id,)
-    ).fetchall()
-    return [
-        EvalItem(
-            question=r[0],
-            relevant_doc_ids=json.loads(r[1] or "[]"),
-            relevant_texts=json.loads(r[2] or "[]"),
-            expected_answer=r[3] or "",
-        )
-        for r in rows
-    ]
+async def load_golden_set(tenant_id: str) -> list[EvalItem]:
+    """Load golden set for a tenant using the same DB layer as tenants."""
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        result = await session.execute(text("""
+            SELECT question, relevant_doc_ids, relevant_texts, expected_answer 
+            FROM eval_sets WHERE tenant_id = :tenant_id
+        """), {"tenant_id": tenant_id})
+        rows = result.fetchall()
+        return [
+            EvalItem(
+                question=r[0],
+                relevant_doc_ids=json.loads(r[1] or "[]"),
+                relevant_texts=json.loads(r[2] or "[]"),
+                expected_answer=r[3] or "",
+            )
+            for r in rows
+        ]

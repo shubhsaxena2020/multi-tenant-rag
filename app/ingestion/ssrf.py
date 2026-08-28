@@ -38,6 +38,7 @@ _BLOCKED_NETWORKS = [
         "224.0.0.0/4",        # multicast
         "240.0.0.0/4",        # reserved / future use
         "255.255.255.255/32", # broadcast
+        "64:ff9b::/96",       # NAT64 (IPv6-translated IPv4, RFC6052, RFC8215)
     )
 ]
 

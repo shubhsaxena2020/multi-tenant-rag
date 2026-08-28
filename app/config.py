@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     # Reranking
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_device: str = "cpu"
-    use_real_reranker: bool = False
+    use_real_reranker: bool = True
     # Provider for real reranking: "flashrank" (default, lightweight CPU Cross-Encoder,
     # no torch) or "sentence_transformers" (full BGE-Reranker-v2-m3, heavier / GPU).
     rerank_provider: str = "flashrank"

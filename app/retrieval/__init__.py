@@ -15,6 +15,7 @@ could be bypassed.
 """
 from __future__ import annotations
 
+from ..config import get_settings
 from ..embed import get_embedder
 from ..rerank import get_reranker
 from ..vector_store import search_dense, search_sparse
@@ -44,13 +45,39 @@ def retrieve(
 ) -> list[dict]:
     embedder = get_embedder()
     reranker = get_reranker()
-    q = embedder.embed_query(question)
+    q_text = question
+    settings = get_settings()
+    if settings.embed_model == "intfloat/multilingual-e5-large":
+        q_text = f"query: {question}"
+    q = embedder.embed_query(q_text)
 
-    # Parallel-ish dense + sparse recall (both scoped to tenant collection)
-    dense_hits = search_dense(tenant_id, q.dense, candidate_k, acl_filter=acl_filter)
-    sparse_hits = search_sparse(tenant_id, q.sparse, candidate_k, acl_filter=acl_filter)
-
-    fused = _rrf([dense_hits, sparse_hits]) if sparse_hits else dense_hits
+    # Use native Qdrant hybrid search with prefetch + server-side fusion
+    # This replaces the client-side RRF fusion for better performance and accuracy
+    from ..vector_store import search_hybrid
+    from qdrant_client.models import Filter
+    
+    # Convert acl_filter to Qdrant Filter if needed
+    qdrant_acl_filter: Filter | None = None
+    if acl_filter is not None:
+        # If it's already a Qdrant Filter from build_acl_filter, use it directly
+        if isinstance(acl_filter, Filter):
+            qdrant_acl_filter = acl_filter
+        else:
+            # Handle case where it might be a list (backward compatibility)
+            from ..rbac import build_acl_filter
+            if isinstance(acl_filter, list):
+                qdrant_acl_filter = build_acl_filter(acl_filter)
+    
+    fused = search_hybrid(
+        tenant_id=tenant_id,
+        dense_vector=q.dense,
+        sparse_vector=q.sparse,
+        limit=top_k,
+        candidate_k=candidate_k,
+        fusion_method="rrf",  # Use RRF as default to match previous behavior
+        acl_filter=qdrant_acl_filter,
+    )
+    
     if rerank:
         fused = reranker.rerank(question, fused)
-    return fused[:top_k]
+    return fused

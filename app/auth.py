@@ -20,7 +20,7 @@ def generate_api_key() -> str:
     return "rk_" + secrets.token_urlsafe(32)
 
 
-def get_tenant_from_header(
+async def get_tenant_from_header(
     authorization: Annotated[str | None, Header()] = None,
 ) -> tenants.TenantRow:
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -31,7 +31,7 @@ def get_tenant_from_header(
     key = authorization.split(" ", 1)[1].strip()
     if not key:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty API key")
-    tenant = tenants.get_tenant_by_key(key)
+    tenant = await tenants.get_tenant_by_key(key)
     if tenant is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
     return tenant
@@ -42,7 +42,9 @@ def require_admin(admin_key: Annotated[str | None, Header(alias="Admin-Key")] = 
     Admin-Key header must match; otherwise (dev) admin is open."""
     settings = get_settings()
     if not settings.admin_api_key:
-        return
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin API key not set"
+        )
     if admin_key != settings.admin_api_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Admin key required"
