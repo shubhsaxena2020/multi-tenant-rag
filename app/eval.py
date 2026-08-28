@@ -125,7 +125,7 @@ async def save_golden_set(tenant_id: str, items: list[EvalItem]) -> int:
             )
         """))
         # Delete existing entries for this tenant
-        await session.execute(text("DELETE FROM eval_sets WHERE tenant_id = :tenant_id"), 
+        await session.execute(text("DELETE FROM eval_sets WHERE tenant_id = :tenant_id"),
                            {"tenant_id": tenant_id})
         # Insert new items
         for it in items:

@@ -68,7 +68,7 @@ def _redis_client():
         client = redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
         client.ping()
         return client
-    except Exception:  # noqa: BLE001 - Redis optional; degrade to in-memory
+    except Exception:
         return None
 
 
@@ -95,7 +95,7 @@ class _RedisLimiter:
             allowed = _to_int(res[0])
             retry_ms = _to_int(res[1])
             return bool(allowed), retry_ms // 1000 + (1 if retry_ms % 1000 else 0)
-        except Exception:  # noqa: BLE001 - Redis hiccup -> fail open
+        except Exception:
             return True, 0
 
 
@@ -126,7 +126,7 @@ def _build() -> object:
     if rc is not None:
         try:
             return _RedisLimiter(rc)
-        except Exception:  # noqa: S110,BLE001 - Redis init failed -> fall back
+        except Exception:
             pass
     return _MemoryLimiter()
 
@@ -154,7 +154,7 @@ def _get_limiter():
     ordering without re-checking every request.
     """
     global _limiter
-    if _limiter is None or get_settings().redis_url and not isinstance(_limiter, _RedisLimiter):
+    if _limiter is None or (get_settings().redis_url and not isinstance(_limiter, _RedisLimiter)):
         _limiter = _build()
     return _limiter
 

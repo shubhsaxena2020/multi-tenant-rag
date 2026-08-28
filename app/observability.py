@@ -214,7 +214,7 @@ class MetricsMiddleware:
                     tenant = await tenants.get_tenant_by_key(key)
                     if tenant is not None:
                         tenant_id = tenant.tenant_id
-                except Exception:  # noqa: BLE001, S110 - logging must never fail the request
+                except Exception:
                     # If we fail, leave tenant_id as empty string
                     pass
 

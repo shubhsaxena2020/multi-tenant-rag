@@ -18,7 +18,7 @@ def generate_answer(question: str, chunks: list[dict], max_context_chars: int = 
     if s.llm_base_url and s.llm_api_key and s.llm_model:
         try:
             return _openai_generate(s.llm_base_url, s.llm_api_key, s.llm_model, question, chunks, max_context_chars)
-        except Exception:  # noqa: BLE001,S110 - silent fallback to extractive answer on any provider error
+        except Exception:
             pass
     return _extractive_answer(chunks)
 
@@ -35,7 +35,7 @@ def stream_answer(question: str, chunks: list[dict], max_context_chars: int = 60
         try:
             yield from _openai_stream(s.llm_base_url, s.llm_api_key, s.llm_model, question, chunks, max_context_chars)
             return
-        except Exception:  # noqa: BLE001,S110 - fall back to extractive streaming
+        except Exception:
             pass
     # Extractive fallback: stream word-by-word.
     answer = _extractive_answer(chunks)

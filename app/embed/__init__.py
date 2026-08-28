@@ -72,7 +72,7 @@ def _prefix_style() -> str:
     if _PREFIX_STYLE is None:
         try:
             _PREFIX_STYLE = get_settings().embed_prefix_style
-        except Exception:  # noqa: BLE001 - settings may be unavailable in odd contexts
+        except Exception:
             _PREFIX_STYLE = "none"
     return _PREFIX_STYLE
 

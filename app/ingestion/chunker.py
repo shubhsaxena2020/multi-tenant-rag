@@ -84,7 +84,7 @@ def _tail_tokens(text: str, enc, overlap_tokens: int) -> str:
     if enc:
         try:
             return enc.decode(tail)
-        except Exception:  # noqa: BLE001 - partial multibyte token; drop it
+        except Exception:
             return ""
     return " ".join(tail)
 

@@ -205,7 +205,7 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
     # Optional HTML->text extraction (unchanged from legacy ingest).
     try:
         from trafilatura import extract  # type: ignore
-    except Exception:  # noqa: BLE001
+    except Exception:
         extract = None
     if extract is not None:
         clean = extract(text, url=url)

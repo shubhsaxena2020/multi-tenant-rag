@@ -132,7 +132,7 @@ def rewrite_query(session_id: str | None, question: str) -> tuple[str, bool]:
     if s.llm_base_url and s.llm_api_key and s.llm_model:
         try:
             return _llm_rewrite(history, question, s), True
-        except Exception:  # noqa: BLE001,S110 - fall back to heuristic on any provider error
+        except Exception:
             pass
     rewritten = _heuristic_rewrite(history, question)
     return rewritten, rewritten != question

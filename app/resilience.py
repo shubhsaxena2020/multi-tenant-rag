@@ -149,7 +149,7 @@ def with_retry(
             return result
         except CircuitOpen:
             raise
-        except Exception as exc:  # noqa: BLE001 - any backend error is transient here
+        except Exception as exc:
             last_exc = exc
             if attempt >= max_attempts:
                 break
@@ -192,7 +192,7 @@ async def with_retry_async(
             return result
         except CircuitOpen:
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last_exc = exc
             if attempt >= max_attempts:
                 break

@@ -95,7 +95,7 @@ async def _lifespan(app: FastAPI):
         recovered = await requeue_orphaned_jobs()
         if recovered:
             log.info("jobs_recovered_on_startup", extra={"recovered": recovered})
-    except Exception as e:  # noqa: BLE001 - recovery must never block startup
+    except Exception as e:
         log.warning("startup_recovery_failed", extra={"error_type": type(e).__name__})
     yield
 
@@ -208,7 +208,7 @@ def ready():
         c = get_client()
         c.get_collections()
         return {"status": "ready", "qdrant": "reachable"}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         # Never leak raw backend exception text/stack to clients (G: log sanitization).
         log.warning("qdrant_unreachable", extra={"error_type": type(exc).__name__})
         raise HTTPException(status_code=503, detail="qdrant unreachable")
@@ -285,7 +285,7 @@ async def create_tenant(body: TenantCreate, _: None = Depends(require_admin)):
     row = await tenants.create_tenant(body.name, tenant_id, api_key, body.plan, body.allowed_groups)
     try:
         ensure_collection(get_client())
-    except Exception as exc:  # noqa: BLE001 - best-effort; queries create it on demand
+    except Exception as exc:
         log.warning("ensure_collection failed for %s: %s", tenant_id, exc)
     log.info("tenant_created", extra={"tenant_id": tenant_id, "tenant_name": body.name})
     return TenantOut(
@@ -604,7 +604,7 @@ def query_stream(
             done = {"tenant_id": auth.tenant_id, "out_of_scope": (not in_scope),
                     "injection_detected": injection, "degraded": degraded}
             yield f"event: done\ndata: {json.dumps(done)}\n\n"
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             err = {"error": getattr(exc, "public_detail", type(exc).__name__)}
             yield f"event: error\ndata: {json.dumps(err)}\n\n"
 

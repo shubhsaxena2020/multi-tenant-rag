@@ -101,7 +101,7 @@ def ensure_collection(client: QdrantClient) -> str:
                 is_tenant=True,
             ),
         )
-    except Exception:  # noqa: S110,BLE001 - index may already exist; ignore
+    except Exception:
         pass
     return name
 
@@ -282,14 +282,14 @@ def search_hybrid(
     """
     client = get_client()
     name = ensure_collection(client)
-    
+
     # Build tenant filter (always required for isolation)
     tenant_filter = Filter(
         must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
     )
     if acl_filter is not None and acl_filter.must is not None:
         tenant_filter.must.extend(acl_filter.must)
-    
+
     # Build prefetches for dense and sparse
     dense_prefetch = models.Prefetch(
         query=dense_vector,
@@ -306,7 +306,7 @@ def search_hybrid(
         limit=candidate_k,
         filter=tenant_filter,
     )
-    
+
     # Build fusion query
     if fusion_method == "dbsf":
         fusion_query = models.FusionQuery(fusion=models.Fusion.DBSF)
@@ -317,7 +317,7 @@ def search_hybrid(
         if rrf_weights is not None:
             rrf_params.weights = rrf_weights
         fusion_query = models.RrfQuery(rrf=rrf_params)
-    
+
     # Execute hybrid query (bounded by retry + circuit breaker; degrades instead of 500s)
     try:
         resp = with_retry(

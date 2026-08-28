@@ -53,28 +53,28 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
         def on_progress(done: int, total: int):
             # Schedule the update but keep track of the task
             task = asyncio.create_task(jobs.update_job(
-                job_id, progress=0.1 + 0.9 * (done / total), 
+                job_id, progress=0.1 + 0.9 * (done / total),
                 done_chunks=done, total_chunks=total
             ))
             progress_tasks.append(task)
 
         result = await ingest_url(
-            tenant_id, payload["url"], payload.get("title"), 
+            tenant_id, payload["url"], payload.get("title"),
             metadata, on_progress=on_progress, acl=payload.get("acl")
         )
     else:
         def on_progress(done: int, total: int):
             # Schedule the update but keep track of the task
             task = asyncio.create_task(jobs.update_job(
-                job_id, progress=done / total, 
+                job_id, progress=done / total,
                 done_chunks=done, total_chunks=total
             ))
             progress_tasks.append(task)
 
         text = payload.get("text") or payload.get("content") or ""
         result = await ingest_text(
-            tenant_id, payload.get("title", "untitled"), text, 
-            payload.get("content_type", "text"), metadata, 
+            tenant_id, payload.get("title", "untitled"), text,
+            payload.get("content_type", "text"), metadata,
             on_progress=on_progress, acl=payload.get("acl")
         )
 

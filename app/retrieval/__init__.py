@@ -55,7 +55,7 @@ def retrieve(
     from qdrant_client.models import Filter
 
     from ..vector_store import search_hybrid
-    
+
     # Convert acl_filter to Qdrant Filter if needed
     qdrant_acl_filter: Filter | None = None
     if acl_filter is not None:
@@ -67,7 +67,7 @@ def retrieve(
             from ..rbac import build_acl_filter
             if isinstance(acl_filter, list):
                 qdrant_acl_filter = build_acl_filter(acl_filter)
-    
+
     fused = search_hybrid(
         tenant_id=tenant_id,
         dense_vector=q.dense,
@@ -77,11 +77,11 @@ def retrieve(
         fusion_method="rrf",  # Use RRF as default to match previous behavior
         acl_filter=qdrant_acl_filter,
     )
-    
+
     if rerank:
         try:
             fused = reranker.rerank(question, fused)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             # Degrade gracefully: if the real reranker fails (model load, OOM), fall
             # back to the deterministic score sort so the chatbot still answers instead
             # of 500-ing. Log the type only (never the raw traceback).
