@@ -49,12 +49,18 @@ class Settings(BaseSettings):
     admin_api_key: str = ""  # if set, POST/GET/DELETE /tenants require Admin-Key header
 
     # Encryption-at-rest (per-tenant AES-GCM envelope). MASTER_ENCRYPTION_KEY is the
-    # only operator secret; 32 raw bytes (base64 or 64-hex). Unset = pass-through (dev).
+    # Encryption: MASTER_ENCRYPTION_KEY is the only operator secret (32 raw bytes,
+    # base64 or 64-hex). master_key_version + MASTER_KEYRING (env JSON {"v":"key"})
+    # enable non-breaking rotation (v9-2 KMS versioning): old ciphertext stays readable.
     master_encryption_key: str = ""
+    master_key_version: int = 1
 
     # Qdrant client timeout (seconds) — bounds every vector call so a sick Qdrant
     # hangs a single request instead of the whole replica (v9-1 resilience).
     qdrant_timeout: float = 10.0
+    # Directory on the Qdrant node where snapshots are written/read (same-node recovery).
+    # Must match QDRANT__STORAGE__SNAPSHOTS_PATH in docker-compose (container path).
+    qdrant_snapshot_dir: str = "/qdrant/storage/snapshots"
 
     # Resilience: retry + circuit breaker (v9-1 graceful degradation).
     retry_max_attempts: int = 3

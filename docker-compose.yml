@@ -6,6 +6,10 @@ services:
       - "6334:6334"
     volumes:
       - ./qdrant_storage:/qdrant/storage
+    environment:
+      # Write snapshots into the mounted storage volume so they persist on the host and
+      # are recoverable via an absolute path (v9-2 Backup & DR).
+      QDRANT__STORAGE__SNAPSHOTS_PATH: /qdrant/storage/snapshots
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:6333/health"]
