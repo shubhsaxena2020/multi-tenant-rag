@@ -81,7 +81,27 @@ from .vector_store import (
 log = get_logger("rag")
 
 # Public root app (health, metrics, docs). Tenant API mounted at /api/v1.
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # v9-5: durable job recovery — reset any jobs orphaned in `running` by a previous
+    # crashed worker back to `pending` so they get retried.
+    try:
+        from .db import init_db, requeue_orphaned_jobs
+
+        await init_db()
+        recovered = await requeue_orphaned_jobs()
+        if recovered:
+            log.info("jobs_recovered_on_startup", extra={"recovered": recovered})
+    except Exception as e:  # noqa: BLE001 - recovery must never block startup
+        log.warning("startup_recovery_failed", extra={"error_type": type(e).__name__})
+    yield
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="RAG Service",
     version="1.0.0",
     description="Multi-tenant Retrieval-Augmented Generation service. Tenant API is "
@@ -223,6 +243,18 @@ def widget_html():
     # permissive-enough CSP for its own scripts but no frame nesting beyond what we set.
     return HTMLResponse(body, media_type="text/html",
                         headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"})
+
+
+@app.get("/health/slo")
+def health_slo():
+    """v9-5: current SLO status (availability + p95 latency) vs configured targets."""
+    from .observability import compute_slo_status
+    from .config import get_settings
+
+    s = get_settings()
+    status = compute_slo_status(s.slo_latency_p95_s, s.slo_availability)
+    status["status"] = "ok" if (status["availability_met"] and status["latency_met"]) else "breach"
+    return status
 
 
 @app.get("/metrics")

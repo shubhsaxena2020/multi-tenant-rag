@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     # <iframe>. Enforced with CSP frame-ancestors. Empty = no embedding allowed.
     allowed_embed_origins: list[str] = []
 
+    # ---------------- v9-5: SLO targets ----------------
+    slo_latency_p95_s: float = 1.5      # p95 request latency target (seconds)
+    slo_availability: float = 0.995     # availability target (fraction, 99.5%)
+
     @field_validator("allowed_embed_origins", mode="before")
     @classmethod
     def _empty_str_to_list(cls, v):

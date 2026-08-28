@@ -1,0 +1,67 @@
+# Prometheus alerting rules for the multi-tenant RAG service (v9-5 SLOs/alerting).
+# Wire this file via `rule_files:` in prometheus.yml and a corresponding Alertmanager
+# receiver (email/Slack/PagerDuty). These are grounded in the metrics exported by
+# app/observability.py + app/resilience.py.
+
+groups:
+  - name: rag-slo
+    rules:
+      # Availability SLO: >0.5% of requests are 5xx over a 10m window.
+      - alert: RAGAvailabilitySLOBreach
+        expr: |
+          (
+            sum(rate(rag_slo_requests_total{outcome="error"}[10m]))
+            /
+            sum(rate(rag_slo_requests_total[10m]))
+          ) > 0.005
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "RAG availability below 99.5% SLO (10m)"
+          description: "Error rate {{ $value | humanizePercentage }} over last 10m (target < 0.5%)."
+
+      # Latency SLO: p95 request latency > 1.5s (configurable). Approximated with
+      # histogram_quantile on rag_slo_latency_seconds.
+      - alert: RAGLatencySLOBreach
+        expr: |
+          histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket[10m])) by (le)) > 1.5
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "RAG p95 latency above 1.5s SLO (10m)"
+          description: "p95 = {{ $value }}s (target <= 1.5s)."
+
+      # Degraded responses climbing: backends (Qdrant/embed/rerank) are impaired.
+      - alert: RAGDegradedResponsesHigh
+        expr: sum(rate(rag_degraded_responses_total[10m])) > 0.01
+        for: 5m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RAG serving degraded responses"
+          description: "{{ $value | humanize }} degraded responses/s — a backend dependency is unhealthy."
+
+      # A circuit breaker opened: dependency hard-down.
+      - alert: RAGCircuitBreakerOpen
+        expr: increase(rag_circuit_open_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "RAG circuit breaker opened for {{ $labels.dependency }}"
+          description: "{{ $labels.dependency }} dependency marked unhealthy by the resilience layer."
+
+      # Ingestion failures spiking.
+      - alert: RAGIngestionFailing
+        expr: |
+          sum(rate(rag_ingest_jobs_total{status="failed"}[10m]))
+          /
+          sum(rate(rag_ingest_jobs_total[10m])) > 0.1
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RAG ingestion failure rate > 10%"
+          description: "{{ $value | humanizePercentage }} of ingestion jobs failed in the last 10m."

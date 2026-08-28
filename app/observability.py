@@ -53,6 +53,84 @@ QUERY_HITS = Histogram(
     buckets=(0, 1, 3, 5, 10, 20, 50),
 )
 
+# ---------------- v9-5: SLO tracking ----------------
+# Availability = successful (non-5xx) responses / total. Latency SLO = p95 under target.
+SLO_AVAILABILITY = Counter(
+    "rag_slo_requests_total", "Requests for SLO availability (split by ok/error)", ["outcome"]
+)
+SLO_LATENCY_OBS = Histogram(
+    "rag_slo_latency_seconds", "Request latency used for the latency SLO",
+    buckets=(0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0),
+)
+DEGRADED_RESPONSES = Counter(
+    "rag_degraded_responses_total", "Responses served in degraded mode (backend impairment)",
+    ["path"]
+)
+CIRCUIT_OPEN_EVENTS = Counter(
+    "rag_circuit_open_total", "Times a circuit breaker opened (dependency unhealthy)", ["dependency"]
+)
+
+
+def record_slo(method: str, path: str, status: int, latency: float) -> None:
+    """Update SLO counters/histograms for one completed request (v9-5)."""
+    ok = 200 <= status < 500
+    SLO_AVAILABILITY.labels(outcome="ok" if ok else "error").inc()
+    SLO_LATENCY_OBS.observe(latency)
+    if status >= 500:
+        DEGRADED_RESPONSES.labels(path=path).inc()
+
+
+def _metric_value(sample) -> float:
+    """prometheus_client stores the live value on `._value`; older versions expose it as a
+    Float with `.get()`, newer ones as a plain float. Normalize both."""
+    v = getattr(sample, "_value", None)
+    if v is None:
+        return 0.0
+    if hasattr(v, "get"):
+        return float(v.get())
+    return float(v)
+
+
+def compute_slo_status(target_latency_p95: float, target_availability: float) -> dict:
+    """Compute current SLO status from Prometheus metric state (v9-5).
+
+    Uses in-process counters so it works without a Prometheus query backend; the same
+    data is also exported as metrics for a real Prometheus/Alertmanager stack."""
+    ok = _metric_value(SLO_AVAILABILITY.labels(outcome="ok"))
+    err = _metric_value(SLO_AVAILABILITY.labels(outcome="error"))
+    total = ok + err
+    availability = (ok / total) if total else 1.0
+    p95 = _histogram_p95(SLO_LATENCY_OBS) or 0.0
+    if p95 == float("inf") or p95 != p95:  # inf or nan -> no data yet
+        p95 = 0.0
+    return {
+        "availability": round(availability, 4),
+        "availability_target": target_availability,
+        "availability_met": availability >= target_availability,
+        "latency_p95_s": round(p95, 3),
+        "latency_target_s": target_latency_p95,
+        "latency_met": p95 <= target_latency_p95,
+        "total_requests": int(total),
+    }
+
+
+def _histogram_p95(hist) -> float | None:
+    """Approximate p95 from a prometheus histogram's cumulative buckets."""
+    buckets = getattr(hist, "_buckets", None)
+    if not buckets:
+        return None
+    counts = [_metric_value(b) for b in buckets]
+    total = sum(counts)
+    if total == 0:
+        return None
+    target = total * 0.95
+    cum = 0.0
+    for i, c in enumerate(counts):
+        cum += c
+        if cum >= target:
+            return float(getattr(buckets[i], "upper_bound", float("inf")))
+    return float(getattr(buckets[-1], "upper_bound", float("inf")))
+
 # ---------- Structured logging ----------
 def get_logger(name: str = "rag") -> logging.Logger:
     logger = logging.getLogger(name)
@@ -155,6 +233,8 @@ class MetricsMiddleware:
         finally:
             REQUEST_COUNT.labels(method=method, path=label_path, status=status).inc()
             REQUEST_LATENCY.labels(method=method, path=label_path).observe(time.perf_counter() - start)
+            # v9-5: feed SLO availability + latency tracking
+            record_slo(method, label_path, status, time.perf_counter() - start)
             # Reset context variables
             tenant_id_var.reset(tenant_id_token)
             trace_id_var.reset(trace_id_token)
