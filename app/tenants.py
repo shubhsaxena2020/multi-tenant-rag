@@ -56,8 +56,8 @@ async def create_tenant(
     return TenantRow(**data)
 
 
-async def add_api_key(tenant_id: str, api_key: str) -> None:
-    await _add_api_key(tenant_id, api_key)
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret") -> None:
+    await _add_api_key(tenant_id, api_key, kind=kind)
 
 
 async def revoke_api_key(tenant_id: str, key_prefix: str) -> int:
@@ -73,6 +73,13 @@ async def get_tenant_by_key(api_key: str) -> TenantRow | None:
     if data is None:
         return None
     return TenantRow(**data)
+
+
+async def get_key_kind(api_key: str) -> str | None:
+    """P1 #9: return the tier of a raw API key ('secret' | 'publishable' | None if unknown)."""
+    from .db import get_key_kind as _get_key_kind
+
+    return await _get_key_kind(api_key)
 
 
 async def get_tenant(tenant_id: str) -> TenantRow | None:
