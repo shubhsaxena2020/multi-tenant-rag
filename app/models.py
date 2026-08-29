@@ -381,6 +381,17 @@ class QueryResponse(BaseModel):
         description="Number of retrieval hops actually executed (PHASE C). 1 for single retrieval; "
         ">1 when multi-hop was used. None when not applicable.",
     )
+    faithfulness: float | None = Field(
+        default=None,
+        ge=0.0, le=1.0,
+        description="Estimated grounding score of the generated answer vs retrieved context "
+        "(PHASE D), 0..1. Higher = more faithful. None when no answer was generated.",
+    )
+    answerable: bool | None = Field(
+        default=None,
+        description="Whether the answer is grounded in / supported by the retrieved context "
+        "(PHASE D). False for a safe 'I don't know' refusal. None when no answer was generated.",
+    )
     out_of_scope: bool = Field(
         default=False,
         description="True when retrieval confidence was below threshold (or no context found): "

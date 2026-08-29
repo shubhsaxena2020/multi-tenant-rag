@@ -55,6 +55,10 @@ QUERY_HITS = Histogram(
 REWRITE_USED = Counter(
     "rag_query_rewrite_total", "Pre-retrieval query rewrites by outcome", ["used"]
 )
+FAITHFULNESS_SCORE = Histogram(
+    "rag_faithfulness", "Answer faithfulness (grounding) score per generated answer",
+    buckets=(0.0, 0.2, 0.4, 0.6, 0.8, 1.01)
+)
 
 # ---------------- v9-5: SLO tracking ----------------
 # Availability = successful (non-5xx) responses / total. Latency SLO = p95 under target.
