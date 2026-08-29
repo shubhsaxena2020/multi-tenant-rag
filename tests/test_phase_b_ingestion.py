@@ -74,34 +74,79 @@ def test_reingest_same_doc_id_replaces_not_duplicates(client):
     assert "Original version" not in snippets, "stale chunk still present after re-ingest"
 
 
+def test_doc_id_dedup_is_tenant_scoped(client):
+    """Two tenants using the SAME doc_id must NOT collide — re-ingest idempotency keys on
+    (tenant_id, doc_id), never doc_id alone. Tenant B re-ingesting 'doc-fixed-1' must not
+    touch tenant A's 'doc-fixed-1' chunks. Cross-tenant isolation check for PHASE B.1."""
+    ta = _make_tenant(client, name="tenantA")
+    tb = _make_tenant(client, name="tenantB")
+    au = _auth(ta["api_key"])
+    bu = _auth(tb["api_key"])
+    shared = "doc-fixed-1"
+
+    client.post(f"{V}/tenantA/documents", headers=au,
+                json={"title": "A", "content": "Tenant A proprietary pricing details ALPHAMARKER.", "doc_id": shared})
+    client.post(f"{V}/tenantB/documents", headers=bu,
+                json={"title": "B", "content": "Tenant B proprietary pricing details BETAMARKER.", "doc_id": shared})
+
+    # Tenant B re-ingests shared doc_id -> must only replace B's chunks.
+    r = client.post(f"{V}/tenantB/documents", headers=bu,
+                    json={"title": "B", "content": "Tenant B UPDATED GAMMAMARKER pricing.", "doc_id": shared})
+    assert r.status_code == 201, r.text
+
+    qa = client.post(f"{V}/tenantA/query", headers=au,
+                     json={"question": "pricing", "generate": False, "top_k": 5}).json()["results"]
+    qb = client.post(f"{V}/tenantB/query", headers=bu,
+                     json={"question": "pricing", "generate": False, "top_k": 5}).json()["results"]
+    a_text = " ".join(h["text"] for h in qa)
+    b_text = " ".join(h["text"] for h in qb)
+    # A still has its ORIGINAL marker (untouched by B's re-ingest) — ALPHAMARKER only.
+    assert "ALPHAMARKER" in a_text and "GAMMAMARKER" not in a_text, f"A leaked/crossed: {a_text[:160]}"
+    # B has its UPDATED marker (GAMMAMARKER) and no longer its ORIGINAL (BETAMARKER).
+    assert "GAMMAMARKER" in b_text and "BETAMARKER" not in b_text, f"B not updated: {b_text[:160]}"
+    # Hard isolation: neither side sees the other's marker.
+    assert "BETA" not in a_text and "GAMMA" not in a_text, "tenant A leaked tenant B's content"
+    assert "ALPHA" not in b_text, "tenant B leaked tenant A's content"
+
+
 def test_reingest_quota_not_inflated(client):
     """Re-ingesting by doc_id must not inflate the tenant chunk_count quota.
 
-    Regression: delete_document_chunks removes the old vectors but the tenant counter
-    must be decremented first, else every re-ingest permanently grows the quota usage.
+    Regression: delete_document_chunks removes the old vectors and the tenant counter
+    must be decremented by the exact replaced count, else every re-ingest permanently
+    grows the quota usage. We read the ACTUAL tenant chunk_count counter (via the
+    async registry helper) before and after — not a proxy — so this cannot false-green.
     """
+    import asyncio
+
+    from app import tenants
+
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
+    tid = t["tenant_id"]
     doc_id = "doc-quota-1"
 
     r1 = client.post(f"{V}/acme/documents", headers=auth,
                      json={"title": "Doc", "content": "alpha beta gamma delta epsilon", "doc_id": doc_id})
     assert r1.status_code == 201, r1.text
-    used_after_first = r1.json()["chunk_count"]
+    used_after_first = asyncio.run(tenants.chunk_count_async(tid))
+    assert used_after_first >= 1
 
     r2 = client.post(f"{V}/acme/documents", headers=auth,
                      json={"title": "Doc", "content": "alpha beta gamma delta epsilon zeta eta theta", "doc_id": doc_id})
     assert r2.status_code == 201, r2.text
+    used_after_second = asyncio.run(tenants.chunk_count_async(tid))
 
-    # Tenant chunk_count is exposed on the tenant info. After a replace it must equal
-    # the new chunk count, NOT first+second (no inflation).
-    info = client.get(f"{V}/acme/keys", headers=auth)
-    assert info.status_code == 200, info.text
-    # tenant chunk count is surfaced via the catalog sum too; assert via delete path:
-    # deleting the doc should bring quota back to 0 exactly (proves net accounting).
+    # Net-zero: re-ingest replaced the doc in place, so the tenant counter must not grow.
+    assert used_after_second == used_after_first, (
+        f"re-ingest inflated tenant chunk_count: {used_after_first} -> {used_after_second}"
+    )
+
+    # Deleting the doc must bring the counter back to baseline exactly (net accounting).
     d = client.delete(f"{V}/acme/documents/{doc_id}", headers=auth)
     assert d.status_code == 200, d.text
-    # After deleting the single doc, a fresh catalog for acme has no rows.
+    used_after_delete = asyncio.run(tenants.chunk_count_async(tid))
+    assert used_after_delete == 0, f"counter not reset after delete: {used_after_delete}"
     cat = client.get(f"{V}/acme/documents", headers=auth)
     assert cat.status_code == 200
     assert all(d["doc_id"] != doc_id for d in cat.json())

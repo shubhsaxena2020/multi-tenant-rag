@@ -167,6 +167,11 @@ def delete_document_chunks(tenant_id: str, doc_id: str) -> int:
     Tenant-scoped (combined filter) so it can never touch another tenant's vectors. Used by
     idempotent re-ingestion (PHASE B.1) to replace a document's chunks before re-upserting,
     and by the quota-accuracy bookkeeping so re-ingest does not inflate tenant chunk usage.
+
+    The true deleted count is obtained by scrolling the matching points *before* the delete
+    (Qdrant's delete ack does not return a count). Returning the real count is what lets the
+    re-ingest code decrement the tenant chunk counter by exactly the replaced amount — a
+    post-delete count would always be 0 and silently inflate the quota on every re-ingest.
     """
     client = get_client()
     name = ensure_collection(client)
@@ -176,13 +181,15 @@ def delete_document_chunks(tenant_id: str, doc_id: str) -> int:
             FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
         ]
     )
+    # Count the points that match BEFORE deleting so we report a real deleted count.
+    removed = _count_points(name, selector)
+    if removed == 0:
+        return 0
     try:
         client.delete(collection_name=name, points_selector=selector, wait=True)
-        # qdrant_client delete returns an UpdateResult whose .status reflects the ack;
-        # to get the true count we count points before deletion via a scroll.
-        return _count_points(name, selector)
+        return removed
     except Exception:
-        return 0
+        return removed
 
 
 def _count_points(name: str, selector: Filter) -> int:
