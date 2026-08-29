@@ -305,7 +305,7 @@ def evaluate_quality(
         ctx = "\n".join(h["text"] for h in results)
         answer = ""
         if generate_answer and results:
-            answer = _gen(it.question, results)
+            answer, _usage = _gen(it.question, results)
         faith += judge.faithfulness(it.question, ctx, answer) if answer else 0.0
         rel += judge.answer_relevancy(it.question, answer) if answer else 0.0
     return QualityReport(

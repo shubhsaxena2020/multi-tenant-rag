@@ -102,6 +102,7 @@ from .usage import get_usage_summary, get_usage_timeseries, record_usage, record
 from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .leads import get_lead_summary, list_leads, save_lead
 from .knowledge_gaps import list_knowledge_gaps, record_knowledge_gap, record_knowledge_gap_bg, count_knowledge_gaps
+from .token_usage import get_token_usage, get_fleet_token_usage, record_token_usage, record_token_usage_bg
 from .analytics import get_analytics_csv_rows, get_tenant_analytics
 from .ratelimit import rate_limit
 from .rbac import (
@@ -659,6 +660,26 @@ async def admin_knowledge_gaps(tenant: str, _: None = Depends(require_admin), li
         return Response(content=csv_text, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=knowledge_gaps_{tenant}.csv"})
     return {"count": count, "entries": entries}
+
+
+# ---------------- Admin: per-tenant token usage + cost (PHASE E #14) ----------------
+@app.get("/admin/token-usage/{tenant}", response_model=dict)
+async def admin_token_usage(tenant: str, _: None = Depends(require_admin), days: int = 30):
+    """Operator-only per-tenant LLM token consumption + cost rollup (issue #14). Token counts
+    are exact when an LLM provider is configured, estimated (flagged `estimated_rows`) when the
+    self-hosted extractive fallback is used. Cost is computed from operator-set per-1k prices;
+    no price is assumed by default (billing integration is a human checkpoint)."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return await get_token_usage(tenant, days=days)
+
+
+@app.get("/admin/token-usage", response_model=dict)
+async def admin_token_usage_fleet(_: None = Depends(require_admin), days: int = 30):
+    """Operator-only fleet-wide token + cost rollup across all tenants (issue #14)."""
+    return await get_fleet_token_usage(days=days)
 
 
 # ---------------- Admin: unified per-tenant analytics (PHASE E #37) ----------------
@@ -1268,7 +1289,15 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
             answer = ("I don't have information on that in the available documents. "
                       "Let me connect you with support, or try rephrasing your question.")
         else:
-            answer = generate_answer(rewritten, hits, system_prompt=auth.system_prompt or "")
+            answer, usage = generate_answer(rewritten, hits, system_prompt=auth.system_prompt or "")
+            # PHASE E (#14): meter tokens per tenant (estimated when no LLM provider is configured).
+            await record_token_usage(
+                auth.tenant_id, prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                estimated=bool(usage.get("estimated", False)),
+                model=get_settings().llm_model, session_id=body.session_id,
+            )
 
     # Best-effort answer text for session history (anchors follow-up rewriting).
     turn_answer = answer or (hits[0]["text"] if hits else "")
@@ -1369,10 +1398,22 @@ def query_stream(
                     answer = "I don't have information on that in the available documents. Let me connect you with support, or try rephrasing your question."
                 else:
                     collected: list[str] = []
-                    for tok in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
+                    stream_usage: dict | None = None
+                    for tok, tok_usage in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
                         collected.append(tok)
+                        if tok_usage:
+                            stream_usage = tok_usage
                         yield f"event: token\ndata: {json.dumps(tok)}\n\n"
                     answer = "".join(collected)
+                    # PHASE E (#14): meter tokens (estimated when no LLM provider configured).
+                    if stream_usage:
+                        record_token_usage_bg(
+                            auth.tenant_id, prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                            completion_tokens=stream_usage.get("completion_tokens", 0),
+                            total_tokens=stream_usage.get("total_tokens", 0),
+                            estimated=bool(stream_usage.get("estimated", False)),
+                            model=get_settings().llm_model, session_id=body.session_id,
+                        )
 
             if body.session_id:
                 store = get_session_store()

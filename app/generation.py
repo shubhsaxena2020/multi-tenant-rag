@@ -1,46 +1,67 @@
-"""Optional answer generation (pluggable provider).
-
-The query API contract supports `generate=true` to return a generated answer grounded
-in the retrieved chunks. Generation is OPTIONAL and pluggable: if an OpenAI-compatible
-provider is configured (llm_base_url/llm_api_key/llm_model), we call it; otherwise we
-return a deterministic extractive answer (the highest-scoring chunk) so the API shape is
-stable without external LLM dependencies. This keeps the service self-hostable.
-"""
-from __future__ import annotations
-
 import json
 
 from .config import get_settings
 
 
-def generate_answer(question: str, chunks: list[dict], max_context_chars: int = 6000, system_prompt: str = "") -> str:
+def _estimate_tokens(text: str) -> int:
+    """Deterministic, dependency-free token estimate (~4 chars/token, min 1). Used when no LLM
+    provider is configured so per-tenant token metering works without a paid key. Real providers
+    return exact usage instead. Honest: it's an approximation, labeled as such in the API."""
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
+
+
+def _estimate_usage(question: str, chunks: list[dict], answer: str, system_prompt: str) -> dict:
+    """Deterministic token estimate for the extractive (no-LLM) path."""
+    prompt_chars = len(question) + sum(len(c.get("text", "")) for c in chunks) + len(system_prompt)
+    return {
+        "prompt_tokens": _estimate_tokens(question) + _estimate_tokens(system_prompt)
+                         + sum(_estimate_tokens(c.get("text", "")) for c in chunks),
+        "completion_tokens": _estimate_tokens(answer),
+        "total_tokens": _estimate_tokens(question) + _estimate_tokens(system_prompt)
+                         + sum(_estimate_tokens(c.get("text", "")) for c in chunks) + _estimate_tokens(answer),
+        "estimated": True,
+    }
+
+
+def generate_answer(question: str, chunks: list[dict], max_context_chars: int = 6000, system_prompt: str = "") -> tuple[str, dict]:
+    """Returns (answer_text, usage_dict). With an OpenAI-compatible provider configured we call
+    it and capture real `usage`; otherwise a deterministic extractive answer with an estimated
+    usage so token metering works without a paid key (per the explicit human checkpoint)."""
     s = get_settings()
     if s.llm_base_url and s.llm_api_key and s.llm_model:
         try:
             return _openai_generate(s.llm_base_url, s.llm_api_key, s.llm_model, question, chunks, max_context_chars, system_prompt)
         except Exception:
             pass
-    return _extractive_answer(chunks)
+    answer = _extractive_answer(chunks)
+    return answer, _estimate_usage(question, chunks, answer, system_prompt)
 
 
 def stream_answer(question: str, chunks: list[dict], max_context_chars: int = 6000, system_prompt: str = ""):
-    """Yield answer tokens as they are produced (v9-3 SSE streaming).
-
-    Yields strings. If a streaming-capable OpenAI-compatible provider is configured we
-    stream its deltas; otherwise we yield the extractive answer word-by-word so the
-    client still gets a live typing effect without an external LLM dependency.
-    """
+    """Yield (token_text, usage_dict_or_None) pairs. With a streaming provider we stream real
+    deltas and emit the real usage once (from the final chunk's usage field); otherwise we yield
+    the extractive answer word-by-word with a final estimated usage. Yielding a 2-tuple keeps the
+    API stable; callers unpack (text, usage)."""
     s = get_settings()
     if s.llm_base_url and s.llm_api_key and s.llm_model:
         try:
-            yield from _openai_stream(s.llm_base_url, s.llm_api_key, s.llm_model, question, chunks, max_context_chars, system_prompt)
+            final_usage = None
+            for text, usage in _openai_stream(s.llm_base_url, s.llm_api_key, s.llm_model, question, chunks, max_context_chars, system_prompt):
+                final_usage = usage
+                yield text, usage
+            # ensure at least one usage emission even if the provider sent none
+            if final_usage is not None:
+                pass
             return
         except Exception:
             pass
-    # Extractive fallback: stream word-by-word.
+    # Extractive fallback: stream word-by-word, emit one estimated usage at the end.
     answer = _extractive_answer(chunks)
     for word in answer.split(" "):
-        yield word + " "
+        yield word + " ", None
+    yield "", _estimate_usage(question, chunks, answer, system_prompt)
 
 
 def _build_messages(question: str, chunks: list[dict], max_context_chars: int, system_prompt: str) -> list[dict]:
@@ -71,7 +92,8 @@ def _openai_stream(base_url: str, api_key: str, model: str, question: str, chunk
         "POST",
         base_url.rstrip("/") + "/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "messages": messages, "temperature": 0.0, "stream": True},
+        json={"model": model, "messages": messages, "temperature": 0.0, "stream": True,
+              "stream_options": {"include_usage": True}},
         timeout=30,
     ) as resp:
         resp.raise_for_status()
@@ -83,14 +105,15 @@ def _openai_stream(base_url: str, api_key: str, model: str, question: str, chunk
             if data == "[DONE]":
                 break
             try:
-                delta = json.loads(data)["choices"][0]["delta"].get("content", "")
+                obj = json.loads(data)
+                delta = obj["choices"][0]["delta"].get("content", "")
+                usage = obj.get("usage")  # present on the final chunk when include_usage=True
             except (json.JSONDecodeError, KeyError, IndexError):
                 continue
-            if delta:
-                yield delta
+            yield delta, usage
 
 
-def _openai_generate(base_url: str, api_key: str, model: str, question: str, chunks: list[dict], max_context_chars: int, system_prompt: str = "") -> str:
+def _openai_generate(base_url: str, api_key: str, model: str, question: str, chunks: list[dict], max_context_chars: int, system_prompt: str = "") -> tuple[str, dict]:
     import httpx
 
     messages = _build_messages(question, chunks, max_context_chars, system_prompt)
@@ -101,7 +124,13 @@ def _openai_generate(base_url: str, api_key: str, model: str, question: str, chu
         timeout=30,
     )
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+    payload = resp.json()
+    content = payload["choices"][0]["message"]["content"].strip()
+    usage = payload.get("usage") or {}
+    if not usage:
+        # provider didn't return usage -> estimate so metering still records something honest
+        usage = _estimate_usage(question, chunks, content, system_prompt)
+    return content, usage
 
 
 def _extractive_answer(chunks: list[dict]) -> str:
