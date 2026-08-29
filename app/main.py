@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from . import jobs as job_store
 from . import tenants
 from .audit import append_audit, list_audit, verify_chain
-from .auth import generate_api_key, get_tenant_from_header, require_admin
+from .auth import generate_api_key, generate_publishable_key, get_tenant_from_header, require_admin, require_secret_key
 from .config import get_settings
 from .conversation import (
     assess_confidence,
@@ -462,7 +462,7 @@ async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(requ
 
 # ---------------- Synchronous ingestion (convenience, small payloads) ----------------
 @v1.post("/{tenant}/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-async def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, request: Request):
+async def create_document(tenant: str, body: DocumentCreate, request: Request, auth: TenantDep, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     validate_content(body.content)
     ct = validate_content_type(body.content_type)
@@ -484,7 +484,7 @@ async def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, re
 
 
 @v1.post("/{tenant}/ingest/url", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request: Request):
+async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
@@ -503,7 +503,7 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
 
 
 @v1.post("/{tenant}/ingest/text", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
-async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, request: Request):
+async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     validate_content(body.text)
     ct = validate_content_type(body.content_type)
@@ -525,7 +525,7 @@ async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, reque
 
 # ---------------- Async ingestion jobs (canonical, status-tracked) ----------------
 @v1.post("/{tenant}/ingest/jobs", response_model=JobStatus, status_code=status.HTTP_202_ACCEPTED)
-async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep, request: Request):
+async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     s = get_settings()
     # protect the embedding worker pool. NOTE: ingest limit is per-MINUTE, so window_min=1
@@ -576,13 +576,13 @@ async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep
 
 
 @v1.get("/{tenant}/jobs", response_model=list[JobStatus])
-async def list_ingest_jobs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+async def list_ingest_jobs(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), limit: int = 50):
     rate_limit(request, auth.tenant_id)
     return [JobStatus(**j) for j in await job_store.list_jobs(auth.tenant_id, limit)]
 
 
 @v1.get("/{tenant}/jobs/{job_id}", response_model=JobStatus)
-async def get_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request):
+async def get_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     j = await job_store.get_job(job_id, auth.tenant_id)
     if j is None:
@@ -591,7 +591,7 @@ async def get_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Req
 
 
 @v1.delete("/{tenant}/jobs/{job_id}", status_code=status.HTTP_200_OK)
-async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request):
+async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     ok = await job_store.delete_job(job_id, auth.tenant_id)
     if not ok:
@@ -601,7 +601,7 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
 
 # ---------------- Document management ----------------
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
-async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request):
+async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     delete_document(auth.tenant_id, doc_id)
     await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
@@ -783,7 +783,7 @@ def query_stream(
 
 
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
+async def rotate_api_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     """Issue a new API key for this tenant. The old key remains valid until revoked."""
     rate_limit(request, auth.tenant_id)
     new_key = generate_api_key()
@@ -800,14 +800,14 @@ async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
 
 
 @v1.get("/{tenant}/keys", response_model=TenantKeysOut)
-async def list_keys(tenant: str, auth: TenantDep, request: Request):
+async def list_keys(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     keys = [KeyInfo(**k) for k in await tenants.list_key_prefixes(auth.tenant_id)]
     return TenantKeysOut(tenant_id=auth.tenant_id, keys=keys)
 
 
 @v1.delete("/{tenant}/keys/{prefix}", status_code=status.HTTP_200_OK)
-async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request):
+async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     n = await tenants.revoke_api_key(auth.tenant_id, prefix)
     if n == 0:
@@ -819,9 +819,30 @@ async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request
     return {"revoked": n}
 
 
+@v1.post("/{tenant}/keys/publishable", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+async def create_publishable_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """P1 #9: mint a read-only key (pk_*) safe to embed client-side in the widget.
+
+    The publishable key resolves to the SAME tenant (isolation unchanged) but is
+    scope-locked to query endpoints by require_secret_key(); it cannot ingest, delete,
+    rotate, or revoke. A tenant may hold any number of publishable keys plus secret keys.
+    """
+    rate_limit(request, auth.tenant_id)
+    new_key = generate_publishable_key()
+    await tenants.add_api_key(auth.tenant_id, new_key, kind="publishable")
+    await audit_event(
+        "key.create_publishable", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": new_key[:8]},
+    )
+    return TenantOut(
+        tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
+        plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
+    )
+
+
 # ---------------- Evaluation (offline RAG quality, no prod traffic) ----------------
 @v1.put("/{tenant}/eval/set", status_code=status.HTTP_200_OK)
-async def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: Request):
+async def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     from .eval import save_golden_set
     from .models import GoldenItem
@@ -832,7 +853,7 @@ async def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: R
 
 
 @v1.post("/{tenant}/eval/run", response_model=EvalReportOut)
-async def run_eval(tenant: str, auth: TenantDep, request: Request,
+async def run_eval(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key),
              top_k: int = 8, candidate_k: int = 30, rerank: bool = True):
     rate_limit(request, auth.tenant_id)
     from .eval import evaluate, load_golden_set
@@ -848,7 +869,7 @@ async def run_eval(tenant: str, auth: TenantDep, request: Request,
 
 
 @v1.post("/{tenant}/eval/quality", response_model=dict)
-async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
+async def run_eval_quality(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key),
                      top_k: int = 8, candidate_k: int = 30, rerank: bool = True,
                      generate_answer: bool = True, persist: bool = True):
     """v9-4: evaluate answer QUALITY (faithfulness + relevancy) via self-hosted LLM judge,
@@ -872,7 +893,7 @@ async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
 
 
 @v1.get("/{tenant}/eval/runs", response_model=list[dict])
-async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+async def eval_runs(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), limit: int = 50):
     """v9-4: recent eval run history (trend tracking) for this tenant."""
     rate_limit(request, auth.tenant_id)
     from .eval import load_eval_runs
@@ -881,7 +902,7 @@ async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int =
 
 
 @v1.post("/{tenant}/eval/golden/auto", response_model=dict)
-async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request,
+async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request, _: None = Depends(require_secret_key),
                       n: int = 3):
     """v9-4: auto-generate golden QA pairs from a provided document via the LLM judge.
     Body: {"title": str, "text": str}. Returns generated EvalItems (and optionally saves)."""
