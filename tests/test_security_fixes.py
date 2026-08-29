@@ -436,3 +436,136 @@ def test_audit_chain_detects_tampering():
     after = asyncio.run(audit.verify_chain())
     assert after["ok"] is False
     assert after["first_break_id"] is not None
+
+
+# ---------------- P1 #3: short admin/bearer secrets fingerprinted, never plaintext ----------------
+def test_audit_hashes_short_secret():
+    """A short ADMIN_API_KEY must be hashed before storage (P1 #3). The raw secret must
+    NOT appear in the audit table, and the stored actor must equal the stable fingerprint.
+    Hashing happens in audit_event() (the entry point used by admin routes); append_audit
+    stores whatever actor it is given."""
+    import asyncio
+    import hashlib
+
+    from app import audit
+    from app.main import audit_event
+
+    asyncio.run(audit_event("tenant.create", "short-admin-secret-123"))
+    rows = asyncio.run(audit.list_audit(limit=10))
+    actor = rows[-1]["actor"]
+    assert "short-admin-secret-123" not in actor, "raw secret leaked into audit actor"
+    assert actor == "admin:" + hashlib.sha256(b"short-admin-secret-123").hexdigest()[:16]
+    # system passthrough stays literal (not a secret)
+    asyncio.run(audit_event("tenant.create", "system"))
+    assert asyncio.run(audit.list_audit(limit=10))[-1]["actor"] == "system"
+
+
+# ---------------- P1 #4: RagError never leaks exc.internal to clients ----------------
+def test_ragerror_no_internal_leak():
+    """The global error handler must return only public_detail, never exc.internal (P1 #4)."""
+    import asyncio
+    import json
+
+    from starlette.requests import Request
+
+    from app.main import _rag_error_handler
+    from app.resilience import RagError
+
+    req = Request({"type": "http", "method": "POST", "path": "/api/v1/x/query", "headers": []})
+    err = RagError("service temporarily degraded", internal="SECRET_TRACE: db conn refused at 10.0.0.5:5432")
+    resp = asyncio.run(_rag_error_handler(req, err))
+    body = json.loads(resp.body)
+    assert body["error"] == "service temporarily degraded"
+    assert body["detail"] == "service temporarily degraded"
+    assert "SECRET_TRACE" not in body["detail"], "exc.internal leaked to client"
+    assert "10.0.0.5" not in body["detail"], "internal host leaked to client"
+
+
+# ---------------- P1 #5: data-plane actions are audited (sampled) ----------------
+def test_data_plane_actions_are_audited(client, monkeypatch):
+    """ingest / query / doc-delete must each produce a tamper-evident audit entry (P1 #5)."""
+    import asyncio
+
+    from app import audit
+    from app.config import get_settings
+
+    # Full sampling so every event is written.
+    monkeypatch.setenv("AUDIT_SAMPLE_RATE", "1.0")
+    get_settings.cache_clear()
+
+    admin = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    r = client.post(f"{V}/tenants", json={"name": "acme"}, headers=admin)
+    assert r.status_code == 201, r.text
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+
+    ing = client.post(f"{V}/acme/documents", headers=auth,
+                      json={"title": "handbook", "content": "Our office is in Berlin. PTO is 20 days.",
+                            "content_type": "text"})
+    assert ing.status_code == 201, ing.text
+    doc_id = ing.json()["doc_id"]
+
+    q = client.post(f"{V}/acme/query", headers=auth, json={"question": "where is the office", "top_k": 3})
+    assert q.status_code == 200, q.text
+
+    d = client.delete(f"{V}/acme/documents/{doc_id}", headers=auth)
+    assert d.status_code == 200, d.text
+
+    rows = asyncio.run(audit.list_audit(limit=100))
+    actions = {row["action"] for row in rows}
+    assert "tenant.ingest" in actions, f"ingest not audited: {actions}"
+    assert "tenant.query" in actions, f"query not audited: {actions}"
+    assert "tenant.delete_doc" in actions, f"doc-delete not audited: {actions}"
+    # data-plane rows carry the tenant id as actor (opaque, non-secret), never the body.
+    dp_actions = {"tenant.ingest", "tenant.query", "tenant.delete_doc", "tenant.eval"}
+    dp = [row for row in rows if row["action"] in dp_actions]
+    assert dp, "no data-plane audit rows captured"
+    assert all(row["actor"].startswith("tenant:") for row in dp)
+
+
+def test_data_plane_audit_sampling_zero_disables(client, monkeypatch):
+    """audit_sample_rate=0 must suppress data-plane audit rows (still observable knob)."""
+    import asyncio
+
+    from app import audit
+    from app.config import get_settings
+
+    monkeypatch.setenv("AUDIT_SAMPLE_RATE", "0")
+    get_settings.cache_clear()
+
+    admin = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    r = client.post(f"{V}/tenants", json={"name": "quiet"}, headers=admin)
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+    client.post(f"{V}/quiet/documents", headers=auth,
+                json={"title": "x", "content": "hello", "content_type": "text"})
+
+    rows = asyncio.run(audit.list_audit(limit=100))
+    assert not any(row["action"] == "tenant.ingest" for row in rows)
+
+
+# ---------------- P1 #6: audit-write failures are observable (metric) ----------------
+def test_audit_write_failure_increments_metric(monkeypatch):
+    """A failed append_audit must increment rag_audit_write_failures_total (P1 #6),
+    so a gap in the accountability trail is observable rather than silently dropped."""
+    import asyncio
+
+    from app import audit
+    from app.observability import AUDIT_FAILURES
+
+    async def _boom(*a, **k):
+        raise RuntimeError("simulated db outage")
+
+    monkeypatch.setattr(audit, "get_session_maker", lambda: _boom)
+
+    def _val(sample) -> float:
+        v = getattr(sample, "_value", None)
+        if v is None:
+            return 0.0
+        return float(v.get()) if hasattr(v, "get") else float(v)
+
+    before = _val(AUDIT_FAILURES.labels(action="tenant.query"))
+    asyncio.run(audit.append_audit("tenant.query", "tenant:t_x", target="d1"))
+    after = _val(AUDIT_FAILURES.labels(action="tenant.query"))
+    assert after > before, "audit failure metric did not increment"
+    # append_audit is fail-open: it must not raise (proven by reaching this line).
