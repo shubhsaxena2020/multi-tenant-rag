@@ -16,6 +16,7 @@ from collections.abc import Callable
 
 from .. import tenants
 from ..config import get_settings
+from ..db import find_document_by_content_hash
 from ..embed import get_embedder
 from ..observability import get_logger
 from ..vector_store import delete_document_chunks, upsert_chunks
@@ -73,6 +74,7 @@ async def ingest_core(
     doc_id: str | None = None,
     source_url: str | None = None,
     source_hash: str | None = None,
+    content_hash: str | None = None,
 ) -> dict:
     embedder = get_embedder()
     from ..conversation import detect_injection
@@ -107,7 +109,7 @@ async def ingest_core(
         # quarantine outcome, and keep idempotency on re-ingest.
         doc_id = doc_id or str(uuid.uuid4())
         await _record_catalog(
-            tenant_id, doc_id, title, content_type, 0, source_url, source_hash, acl
+            tenant_id, doc_id, title, content_type, 0, source_url, source_hash, acl, content_hash
         )
         return {"doc_id": doc_id, "title": title,
                 "chunk_count": 0, "quarantined_chunks": quarantined}
@@ -158,7 +160,7 @@ async def ingest_core(
         pass
     await _record_catalog(
         tenant_id, doc_id, title, content_type, len(chunk_ids),
-        source_url, source_hash, acl,
+        source_url, source_hash, acl, content_hash,
     )
     if on_progress:
         on_progress(total, total)
@@ -175,6 +177,7 @@ async def _record_catalog(
     source_url: str | None,
     source_hash: str | None,
     acl: list[str] | None,
+    content_hash: str | None = None,
 ) -> None:
     from ..db import upsert_document
 
@@ -186,6 +189,7 @@ async def _record_catalog(
         chunk_count=chunk_count,
         source_url=source_url,
         source_hash=source_hash,
+        content_hash=content_hash,
         acl=acl,
     )
 
@@ -197,10 +201,25 @@ async def ingest_text(
     doc_id: str | None = None,
     source_url: str | None = None,
     source_hash: str | None = None,
+    content_hash: str | None = None,
 ) -> dict:
+    # v10.10: content-hash deduplication. Re-ingesting the SAME body text (without a
+    # caller-supplied doc_id) must REPLACE the prior doc in place, not fan out duplicates.
+    # Derive a deterministic hash of the normalized text and reuse the existing doc_id.
+    if doc_id is None:
+        import hashlib
+
+        norm = " ".join(text.split())  # collapse whitespace so trivial formatting changes match
+        derived = content_hash or hashlib.sha256(norm.encode("utf-8")).hexdigest()
+        existing = await find_document_by_content_hash(tenant_id, derived)
+        if existing:
+            doc_id = existing.get("doc_id")
+        else:
+            content_hash = derived
     return await ingest_core(
         tenant_id, title, text, content_type, metadata, on_progress, acl,
         doc_id=doc_id, source_url=source_url, source_hash=source_hash,
+        content_hash=content_hash,
     )
 
 
@@ -212,9 +231,16 @@ async def ingest_url(
     source_hash: str | None = None,
 ) -> dict:
     body = fetch_url(url)
-    # PHASE B.1/B.2: idempotent re-crawl. If a source_hash was supplied (sitemap crawler
-    # derives one from the URL) and we already have a doc for it, reuse its doc_id so the
-    # re-crawl REPLACES the page in place instead of fanning out duplicate chunks.
+    # v10.10: the synchronous URL endpoint previously did NOT derive a source_hash, so
+    # re-ingesting the same URL without an explicit doc_id fanned out duplicate chunks.
+    # Derive it here (mirroring the async job runner) so both paths get idempotent recrawl.
+    if source_hash is None:
+        import hashlib
+
+        source_hash = hashlib.sha256(url.encode("utf-8")).hexdigest()
+    # PHASE B.1/B.2: idempotent re-crawl. If a source_hash was supplied (or derived above)
+    # and we already have a doc for it, reuse its doc_id so the re-crawl REPLACES the page
+    # in place instead of fanning out duplicate chunks.
     if doc_id is None and source_hash:
         from ..db import find_document_by_source_hash
 

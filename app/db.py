@@ -115,6 +115,10 @@ class Document(Base):
     # Optional provenance for deduplication (sitemap recrawl / re-ingest idempotency):
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # v10.10: deterministic SHA-256 of the (normalized) document body. Lets re-ingesting the
+    # SAME content (same URL or same text) without a caller-supplied doc_id REPLACE the prior
+    # chunks in place instead of fanning out duplicate chunks. Indexed for fast lookup.
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     acl: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -170,6 +174,23 @@ async def init_db() -> None:
         # Uses "ADD COLUMN IF NOT EXISTS" where supported (SQLite 3.35+, Postgres).
         await conn.run_sync(_migrate_tenant_columns)
         await conn.run_sync(_migrate_tenant_keys_columns)
+        await conn.run_sync(_migrate_documents_columns)
+
+
+def _migrate_documents_columns(conn) -> None:
+    """v10.10: add `content_hash` to an existing `documents` table (NULL = unset)."""
+    insp = __import__("sqlalchemy").inspect(conn)
+    try:
+        existing = {c["name"] for c in insp.get_columns("documents")}
+    except Exception:
+        return
+    if "content_hash" in existing:
+        return
+    dialect = conn.dialect.name
+    if dialect == "postgresql":
+        conn.exec_driver_sql('ALTER TABLE documents ADD COLUMN "content_hash" VARCHAR(64)')
+    else:
+        conn.exec_driver_sql("ALTER TABLE documents ADD COLUMN content_hash VARCHAR(64)")
 
 
 def _migrate_tenant_columns(conn) -> None:
@@ -636,6 +657,7 @@ async def upsert_document(
     chunk_count: int,
     source_url: str | None = None,
     source_hash: str | None = None,
+    content_hash: str | None = None,
     acl: list[str] | None = None,
     session: AsyncSession | None = None,
 ) -> None:
@@ -657,6 +679,7 @@ async def upsert_document(
                     chunk_count=chunk_count,
                     source_url=source_url,
                     source_hash=source_hash,
+                    content_hash=content_hash,
                     acl=acl_json,
                     created_at=now,
                     updated_at=now,
@@ -668,6 +691,7 @@ async def upsert_document(
             existing.chunk_count = chunk_count
             existing.source_url = source_url
             existing.source_hash = source_hash
+            existing.content_hash = content_hash
             existing.acl = acl_json
             existing.updated_at = now
         await s.commit()
@@ -694,6 +718,25 @@ async def find_document_by_source_hash(
         stmt = (
             select(Document)
             .where(Document.tenant_id == tenant_id, Document.source_hash == source_hash)
+            .order_by(Document.updated_at.desc())
+            .limit(1)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _document_row_to_dict(row) if row else None
+
+
+async def find_document_by_content_hash(
+    tenant_id: str, content_hash: str, session: AsyncSession | None = None
+) -> dict | None:
+    """v10.10: find an existing doc for the same (normalized) content body so a re-ingest
+    of identical text/URL body (without a caller-supplied doc_id) REPLACES it in place
+    instead of creating duplicate chunks."""
+    if not content_hash:
+        return None
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(Document)
+            .where(Document.tenant_id == tenant_id, Document.content_hash == content_hash)
             .order_by(Document.updated_at.desc())
             .limit(1)
         )
@@ -746,6 +789,7 @@ def _document_row_to_dict(row: Document) -> dict:
         "chunk_count": row.chunk_count,
         "source_url": row.source_url,
         "source_hash": row.source_hash,
+        "content_hash": row.content_hash,
         "acl": acl,
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
