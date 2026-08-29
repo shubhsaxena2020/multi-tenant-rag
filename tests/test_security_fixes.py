@@ -776,4 +776,75 @@ def test_publishable_key_cannot_rotate_or_revoke(client):
     assert client.delete(f"{V}/cfgtenant/keys/rk_xxxx", headers={"Authorization": f"Bearer {pk}"}).status_code == 403
 
 
+# ---- v10.8: API key expiry (time-boxed keys) ----
+
+def _iso(offset_minutes: int) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(minutes=offset_minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_expired_publishable_key_is_rejected(client):
+    """v10.8: a publishable key with a past expiry must be rejected like a revoked key (401)."""
+    secret = _make_tenant(client, "exptenant")
+    pub = client.post(f"{V}/exptenant/keys/publishable", json={"expires_at": _iso(-10)},
+                      headers={"Authorization": f"Bearer {secret}"})
+    pk = pub.json()["api_key"]
+    assert client.post(f"{V}/exptenant/query", json={"question": "x"},
+                       headers={"Authorization": f"Bearer {pk}"}).status_code == 401
+
+
+def test_expired_secret_key_is_rejected(client):
+    """v10.8: a secret key with a past expiry must be rejected (401) on all routes."""
+    secret = _make_tenant(client, "expsec")
+    rot = client.post(f"{V}/expsec/keys", json={"expires_at": _iso(-5)},
+                      headers={"Authorization": f"Bearer {secret}"})
+    expired = rot.json()["api_key"]
+    assert client.get(f"{V}/expsec/keys", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+    assert client.post(f"{V}/expsec/query", json={"question": "x"},
+                       headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+
+
+def test_future_expiry_key_works_then_patch_to_past_expires(client):
+    """v10.8: a key with a future expiry works; PATCH-ing its expiry to the past revokes it."""
+    secret = _make_tenant(client, "futexp")
+    pub = client.post(f"{V}/futexp/keys/publishable", json={"expires_at": _iso(60)},
+                      headers={"Authorization": f"Bearer {secret}"})
+    pk = pub.json()["api_key"]
+    assert client.post(f"{V}/futexp/query", json={"question": "x"},
+                       headers={"Authorization": f"Bearer {pk}"}).status_code == 200
+    keys = client.get(f"{V}/futexp/keys", headers={"Authorization": f"Bearer {secret}"}).json()["keys"]
+    prefix = next(k["prefix"] for k in keys if k["kind"] == "publishable")
+    patch = client.patch(f"{V}/futexp/keys/{prefix}/expiry", json={"expires_at": _iso(-1)},
+                         headers={"Authorization": f"Bearer {secret}"})
+    assert patch.status_code == 200 and patch.json()["expires_at"] == _iso(-1)
+    assert client.post(f"{V}/futexp/query", json={"question": "x"},
+                       headers={"Authorization": f"Bearer {pk}"}).status_code == 401
+
+
+def test_list_keys_exposes_expires_at_and_patch_clears_it(client):
+    """v10.8: list_keys surfaces expires_at; a PATCH with null clears the expiry."""
+    secret = _make_tenant(client, "listexp")
+    pub = client.post(f"{V}/listexp/keys/publishable", json={"expires_at": _iso(120)},
+                      headers={"Authorization": f"Bearer {secret}"})
+    keys = client.get(f"{V}/listexp/keys", headers={"Authorization": f"Bearer {secret}"}).json()["keys"]
+    pub_info = next(k for k in keys if k["kind"] == "publishable")
+    assert pub_info["expires_at"] is not None
+    patch = client.patch(f"{V}/listexp/keys/{pub_info['prefix']}/expiry", json={"expires_at": None},
+                        headers={"Authorization": f"Bearer {secret}"})
+    assert patch.status_code == 200 and patch.json()["expires_at"] is None
+    keys2 = client.get(f"{V}/listexp/keys", headers={"Authorization": f"Bearer {secret}"}).json()["keys"]
+    assert next(k for k in keys2 if k["prefix"] == pub_info["prefix"])["expires_at"] is None
+
+
+def test_malformed_expiry_rejected_with_422(client):
+    """v10.8: a non-ISO / naive expiry string must be rejected (422), not silently accepted."""
+    secret = _make_tenant(client, "badexp")
+    r = client.post(f"{V}/badexp/keys/publishable", json={"expires_at": "not-a-date"},
+                    headers={"Authorization": f"Bearer {secret}"})
+    assert r.status_code == 422
+    r2 = client.post(f"{V}/badexp/keys/publishable", json={"expires_at": "2026-12-31T23:59:59"},
+                    headers={"Authorization": f"Bearer {secret}"})
+    assert r2.status_code == 422
+
+
 

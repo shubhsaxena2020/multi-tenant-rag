@@ -44,6 +44,31 @@ class KeyInfo(BaseModel):
     created_at: str
     revoked: bool
     kind: str = "secret"  # "secret" (rk_*) or "publishable" (pk_*) — P1 #9
+    expires_at: str | None = None  # v10.8: ISO expiry, or null = never
+
+
+class KeyExpiryRequest(BaseModel):
+    """v10.8: set/clear a key's expiry by prefix. None = clear (never expires)."""
+    expires_at: str | None = Field(
+        default=None,
+        description="UTC ISO-8601 expiry (e.g. 2026-12-31T23:59:59Z), or null to clear.",
+    )
+
+
+class PublishableKeyRequest(BaseModel):
+    """P1 #9 + v10.8: mint a read-only publishable key, optionally time-boxed."""
+    expires_at: str | None = Field(
+        default=None,
+        description="Optional UTC ISO-8601 expiry for the publishable key.",
+    )
+
+
+class SecretKeyRequest(BaseModel):
+    """v10.8: mint an additional secret key, optionally time-boxed."""
+    expires_at: str | None = Field(
+        default=None,
+        description="Optional UTC ISO-8601 expiry for the new secret key.",
+    )
 
 
 class TenantKeysOut(BaseModel):

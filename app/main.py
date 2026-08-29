@@ -24,6 +24,28 @@ from . import jobs as job_store
 from . import tenants
 from .audit import append_audit, list_audit, verify_chain
 from .auth import generate_api_key, generate_publishable_key, get_tenant_from_header, require_admin, require_secret_key
+
+
+def _parse_expiry(value: str | None):
+    """v10.8: parse a UTC ISO-8601 expiry string into a tz-aware datetime, or None.
+
+    Raises HTTPException(422) on a malformed/naive value so callers get a clear error
+    rather than a silent never-expire. Naive datetimes are rejected (we require explicit
+    UTC) to avoid ambiguous expiry semantics.
+    """
+    if value is None:
+        return None
+    from datetime import UTC, datetime
+    from fastapi import HTTPException
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(422,
+                            detail=f"invalid expires_at (expected UTC ISO-8601, e.g. 2026-12-31T23:59:59Z): {value!r}")
+    if dt.tzinfo is None:
+        raise HTTPException(422,
+                            detail="expires_at must be timezone-aware (UTC). Append 'Z' or '+00:00'.")
+    return dt.astimezone(UTC)
 from .config import get_settings
 from .conversation import (
     assess_confidence,
@@ -44,9 +66,12 @@ from .models import (
     IngestUrl,
     JobStatus,
     KeyInfo,
+    KeyExpiryRequest,
+    PublishableKeyRequest,
     QueryRequest,
     QueryResponse,
     RetrievedChunk,
+    SecretKeyRequest,
     TenantCreate,
     TenantKeysOut,
     TenantOut,
@@ -748,8 +773,11 @@ def query_stream(
             hits = [h for h in hits if not detect_injection(h["text"])]
             in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
 
+            # Include source_url so the widget can render clickable citations (PHASE C #6).
             sources = [{"chunk_id": h["chunk_id"], "title": h.get("title"),
-                        "snippet": h["text"][:280]} for h in hits[:body.top_k]]
+                        "snippet": h["text"][:280],
+                        "url": (h.get("metadata") or {}).get("source_url")}
+                       for h in hits[:body.top_k]]
             yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
 
             answer = None
@@ -783,16 +811,41 @@ def query_stream(
 
 
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def rotate_api_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
-    """Issue a new API key for this tenant. The old key remains valid until revoked."""
+async def rotate_api_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), body: SecretKeyRequest | None = None):
+    """Issue a new API key for this tenant. The old key remains valid until revoked.
+
+    v10.8: the new key may be time-boxed via body.expires_at (UTC ISO-8601). Missing body
+    mints a non-expiring key (backward compatible).
+    """
     rate_limit(request, auth.tenant_id)
     new_key = generate_api_key()
-    await tenants.add_api_key(auth.tenant_id, new_key)
+    expires_at = _parse_expiry(body.expires_at if body else None)
+    await tenants.add_api_key(auth.tenant_id, new_key, kind="secret", expires_at=expires_at)
     await audit_event(
         "key.rotate", actor=auth.tenant_id, target=auth.tenant_id,
-        meta={"prefix": new_key[:8]},
+        meta={"prefix": new_key[:8], "expires_at": body.expires_at if body else None},
     )
     # return only the new key (shown once) alongside tenant info
+    return TenantOut(
+        tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
+        plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
+    )
+
+
+@v1.post("/{tenant}/keys/secret", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+async def create_secret_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), body: SecretKeyRequest | None = None):
+    """v10.8: mint an additional full-power secret key (rk_*), optionally time-boxed.
+
+    Distinct from POST /{tenant}/keys (rotate) so callers can add non-rotating keys.
+    """
+    rate_limit(request, auth.tenant_id)
+    new_key = generate_api_key()
+    expires_at = _parse_expiry(body.expires_at if body else None)
+    await tenants.add_api_key(auth.tenant_id, new_key, kind="secret", expires_at=expires_at)
+    await audit_event(
+        "key.create_secret", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": new_key[:8], "expires_at": body.expires_at if body else None},
+    )
     return TenantOut(
         tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
         plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
@@ -819,20 +872,38 @@ async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request
     return {"revoked": n}
 
 
+@v1.patch("/{tenant}/keys/{prefix}/expiry", status_code=status.HTTP_200_OK)
+async def set_key_expiry_endpoint(tenant: str, prefix: str, body: KeyExpiryRequest, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """v10.8: set or clear a key's expiry (time-boxed keys) by prefix. None = never expire."""
+    rate_limit(request, auth.tenant_id)
+    expires_at = _parse_expiry(body.expires_at)
+    n = await tenants.set_key_expiry(auth.tenant_id, prefix, expires_at)
+    if n == 0:
+        from fastapi import HTTPException, status as _st
+        raise HTTPException(status_code=_st.HTTP_404_NOT_FOUND, detail="key not found or already revoked")
+    await audit_event(
+        "key.expiry_set", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": prefix, "expires_at": body.expires_at},
+    )
+    return {"prefix": prefix, "expires_at": body.expires_at, "updated": n}
+
+
 @v1.post("/{tenant}/keys/publishable", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def create_publishable_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+async def create_publishable_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), body: PublishableKeyRequest | None = None):
     """P1 #9: mint a read-only key (pk_*) safe to embed client-side in the widget.
 
     The publishable key resolves to the SAME tenant (isolation unchanged) but is
     scope-locked to query endpoints by require_secret_key(); it cannot ingest, delete,
     rotate, or revoke. A tenant may hold any number of publishable keys plus secret keys.
+    v10.8: the key may be time-boxed via body.expires_at. Missing body = non-expiring.
     """
     rate_limit(request, auth.tenant_id)
     new_key = generate_publishable_key()
-    await tenants.add_api_key(auth.tenant_id, new_key, kind="publishable")
+    expires_at = _parse_expiry(body.expires_at if body else None)
+    await tenants.add_api_key(auth.tenant_id, new_key, kind="publishable", expires_at=expires_at)
     await audit_event(
         "key.create_publishable", actor=auth.tenant_id, target=auth.tenant_id,
-        meta={"prefix": new_key[:8]},
+        meta={"prefix": new_key[:8], "expires_at": body.expires_at if body else None},
     )
     return TenantOut(
         tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,

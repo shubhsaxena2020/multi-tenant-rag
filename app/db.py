@@ -17,6 +17,7 @@ from sqlalchemy import (
     Text,
     delete,
     func,
+    or_,
     select,
     update,
 )
@@ -60,6 +61,10 @@ class TenantKey(Base):
     # A publishable key resolves to the SAME tenant_id (isolation is unchanged) but is
     # scope-locked to query endpoints by app/auth.py:require_secret_key.
     kind: Mapped[str] = mapped_column(String(16), default="secret", server_default="secret", nullable=False)
+    # v10.8: optional UTC expiry. NULL = never expires; expired keys are rejected at auth
+    # time (see require_secret_key / list_keys). Was referenced by add_api_key/require_secret_key
+    # but the column was missing from the model -> every secret-key-guarded endpoint crashed.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Job(Base):
@@ -119,10 +124,24 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Create tables if they don't exist. Safe to call multiple times."""
+    """Create tables if they don't exist. Safe to call multiple times.
+
+    Also performs non-destructive online migrations (ADD COLUMN IF NOT EXISTS) so existing
+    production tables gain new columns without a DROP/DATA LOSS. We never DROP or ALTER-type
+    in a way that could lose data (per the explicit human-checkpoint migration rule).
+    """
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # v10.8 migration: TenantKey.expires_at was referenced by code but missing from the
+        # table on some deployments. Add it idempotently if absent (SQLite + Postgres syntax).
+        try:
+            await conn.exec_driver_sql(
+                "ALTER TABLE tenant_keys ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE"
+            )
+        except Exception:
+            # Column already exists (or dialect-specific no-op) — safe to ignore.
+            pass
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -178,10 +197,12 @@ async def create_tenant(
         }
 
 
-async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", session: AsyncSession | None = None) -> None:
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", expires_at: datetime | None = None, session: AsyncSession | None = None) -> None:
     """Add a secondary/rotated key for an existing tenant (hashed).
 
     P1 #9: `kind` = "secret" (full power, rk_*) or "publishable" (read-only, pk_*).
+    v10.8: `expires_at` = optional UTC expiry. NULL = never expires; expired keys are
+    rejected at resolution time (see get_tenant_by_key / get_key_kind).
     """
     now = datetime.now(UTC)
     async with (session or get_session_maker())() as s:
@@ -192,6 +213,7 @@ async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", sessio
             created_at=now,
             revoked=False,
             kind=kind,
+            expires_at=expires_at,
         )
         s.add(key)
         await s.commit()
@@ -239,24 +261,48 @@ async def revoke_api_key(tenant_id: str, key_prefix: str, session: AsyncSession 
 async def list_key_prefixes(tenant_id: str, session: AsyncSession | None = None) -> list[dict]:
     async with (session or get_session_maker())() as s:
         stmt = (
-            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked, TenantKey.kind)
+            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked, TenantKey.kind, TenantKey.expires_at)
             .where(TenantKey.tenant_id == tenant_id)
             .order_by(TenantKey.created_at.desc())
         )
         result = await s.execute(stmt)
         return [
             {"prefix": r.prefix, "created_at": r.created_at.isoformat(),
-             "revoked": r.revoked, "kind": r.kind}
+             "revoked": r.revoked, "kind": r.kind,
+             "expires_at": r.expires_at.isoformat() if r.expires_at is not None else None}
             for r in result.all()
         ]
 
 
+async def set_key_expiry(tenant_id: str, key_prefix: str, expires_at: datetime | None,
+                         session: AsyncSession | None = None) -> int:
+    """v10.8: set (or clear, with expires_at=None) the expiry for a key by prefix.
+
+    Returns number of keys updated. Expiry is validated at resolution time by
+    get_tenant_by_key / get_key_kind (expired keys are rejected like revoked keys).
+    """
+    async with (session or get_session_maker())() as s:
+        n = await s.execute(
+            update(TenantKey)
+            .where(TenantKey.tenant_id == tenant_id, TenantKey.prefix == key_prefix,
+                   TenantKey.revoked == False)
+            .values(expires_at=expires_at)
+        )
+        await s.commit()
+        return n.rowcount if hasattr(n, "rowcount") else 0
+
+
 async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -> dict | None:
-    """Resolve tenant by raw API key (hash lookup)."""
+    """Resolve tenant by raw API key (hash lookup).
+
+    v10.8: expired keys are rejected (treated like revoked -> None -> 401 upstream).
+    """
+    now = datetime.now(UTC)
     async with (session or get_session_maker())() as s:
         stmt = select(TenantKey.tenant_id, TenantKey.kind).where(
             TenantKey.key_hash == _key_hash(api_key),
             TenantKey.revoked == False,
+            or_(TenantKey.expires_at == None, TenantKey.expires_at > now),
         )
         result = await s.execute(stmt)
         row = result.first()
@@ -267,15 +313,16 @@ async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -
 
 
 async def get_key_kind(api_key: str, session: AsyncSession | None = None) -> str | None:
-    """P1 #9: return key tier ('secret' | 'publishable') or None if unknown/revoked."""
+    """P1 #9: return key tier ('secret' | 'publishable') or None if unknown/revoked/expired."""
+    now = datetime.now(UTC)
     async with (session or get_session_maker())() as s:
         stmt = select(TenantKey.kind).where(
             TenantKey.key_hash == _key_hash(api_key),
             TenantKey.revoked == False,
+            or_(TenantKey.expires_at == None, TenantKey.expires_at > now),
         )
         result = await s.execute(stmt)
-        kind = result.scalar_one_or_none()
-        return kind
+        return result.scalar_one_or_none()
 
 
 async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dict | None:

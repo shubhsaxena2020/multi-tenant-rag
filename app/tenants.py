@@ -42,6 +42,9 @@ from .db import (
 from .db import (
     revoke_api_key as _revoke_api_key,
 )
+from .db import (
+    set_key_expiry as _set_key_expiry,
+)
 from .models import TenantRow
 
 
@@ -56,8 +59,12 @@ async def create_tenant(
     return TenantRow(**data)
 
 
-async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret") -> None:
-    await _add_api_key(tenant_id, api_key, kind=kind)
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", expires_at=None) -> None:
+    await _add_api_key(tenant_id, api_key, kind=kind, expires_at=expires_at)
+
+
+async def set_key_expiry(tenant_id: str, key_prefix: str, expires_at) -> int:
+    return await _set_key_expiry(tenant_id, key_prefix, expires_at)
 
 
 async def revoke_api_key(tenant_id: str, key_prefix: str) -> int:

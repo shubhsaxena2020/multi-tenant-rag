@@ -68,6 +68,17 @@ next step so it isn't a dead note.
   documented allowed_groups default, retrieved-chunk injection filter, admin-key fail-closed.
 - [ ] **Tenant API key rotation UX**: currently operator-driven. Next: self-service rotation
   endpoint + key expiry.
+- [DONE] **Self-service API key expiry (v10.8)**: complement to P1 #9 key tiers. Keys
+  (`rk_*` secret + `pk_*` publishable) can now carry an optional UTC ISO-8601 `expires_at`;
+  expired keys are rejected at resolution time (treated like revoked -> 401), so time-boxed
+  keys + rotation-without-manual-revocation are possible. Endpoints: `POST /{tenant}/keys`
+  (rotate, optional expires_at), `POST /{tenant}/keys/secret` (mint additional secret key,
+  optional expires_at), `POST /{tenant}/keys/publishable` (optional expires_at),
+  `PATCH /{tenant}/keys/{prefix}/expiry` (set/clear expiry; 404 if key gone/revoked).
+  Malformed/naive expiry strings are rejected with 422. `TenantKey.expires_at` column added
+  (nullable); `list_key_prefixes` surfaces it. PROD MIGRATION: `ALTER TABLE tenant_keys
+  ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE;` (idempotent — nullable). Covered by
+  tests/test_security_fixes.py (test_*_expiry_*).
 - [DONE] **Publishable / secret key tiers (P1 #9)**: tenants can now mint a read-only
   **publishable key** (`pk_*`) via `POST /api/v1/{tenant}/keys/publishable` that is safe to
   embed client-side (e.g. the widget). A publishable key resolves to the SAME tenant
