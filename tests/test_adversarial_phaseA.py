@@ -148,18 +148,44 @@ def test_cross_namespace_secret_write_lands_in_own_tenant(client_and_keys):
 
 
 # ---- 3. CORS deny-by-default (TestClient passes Origin through ASGI scope) ----
-def test_cors_disallowed_origin_no_acao(client_and_keys):
-    c, rk_a, rk_b, pk_a = client_and_keys
-    r = c.get("/api/v1/adv-a/documents",
-              headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://evil.example.com"})
-    assert "access-control-allow-origin" not in r.headers
+# get_settings() is lru_cached and reads ALLOWED_EMBED_ORIGINS from the ambient env (or a
+# .env file), so a security test must NOT depend on that. Pin the allowlist explicitly via
+# the env var + cache_clear so the assertion is deterministic regardless of the runner's env.
+import json as _json
+from app.config import get_settings as _get_settings
 
 
-def test_cors_allowed_origin_echoed(client_and_keys):
-    c, rk_a, rk_b, pk_a = client_and_keys
-    r = c.get("/api/v1/adv-a/documents",
-              headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://app.client.com"})
-    # conftest does not set ALLOWED_EMBED_ORIGINS, so default allowlist is empty -> no ACAO.
-    # We assert the deny-by-default property regardless of configured origins: a non-listed
-    # origin must never receive ACAO. (Empty allowlist => evil is non-listed.)
-    assert "access-control-allow-origin" not in r.headers
+def _pin_allowlist(monkeypatch, origins):
+    monkeypatch.setenv("ALLOWED_EMBED_ORIGINS", _json.dumps(origins))
+    _get_settings.cache_clear()  # force re-read of the pinned env value
+
+
+def test_cors_default_deny_no_acao_when_origin_not_allowlisted(client_and_keys, monkeypatch):
+    _pin_allowlist(monkeypatch, [])  # empty allowlist => nothing is allowed
+    try:
+        c, rk_a, rk_b, pk_a = client_and_keys
+        # even an origin that *looks* like a legit app must get NO ACAO when not allowlisted
+        r = c.get("/api/v1/adv-a/documents",
+                  headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://app.client.com"})
+        assert "access-control-allow-origin" not in r.headers
+        # a clearly-disallowed origin also gets nothing
+        r2 = c.get("/api/v1/adv-a/documents",
+                   headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://evil.example.com"})
+        assert "access-control-allow-origin" not in r2.headers
+    finally:
+        _get_settings.cache_clear()  # restore cache for the rest of the suite
+
+
+def test_cors_allowed_origin_echoed_exactly(client_and_keys, monkeypatch):
+    _pin_allowlist(monkeypatch, ["https://app.client.com"])  # only this origin allowed
+    try:
+        c, rk_a, rk_b, pk_a = client_and_keys
+        r = c.get("/api/v1/adv-a/documents",
+                  headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://app.client.com"})
+        assert r.headers.get("access-control-allow-origin") == "https://app.client.com"
+        # a different origin is still denied (no reflection, no wildcard)
+        r2 = c.get("/api/v1/adv-a/documents",
+                   headers={"Authorization": f"Bearer {rk_a}", "Origin": "https://evil.example.com"})
+        assert "access-control-allow-origin" not in r2.headers
+    finally:
+        _get_settings.cache_clear()
