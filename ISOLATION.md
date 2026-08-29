@@ -62,3 +62,25 @@ inside `vector_store.py` changes.
 Truto (2026), "Multi-Tenant RAG Data Isolation: The 2026 Enterprise Architecture
 Guide" — isolation must be deterministic at the vector database, not "we filter at the
 LLM layer" (which it explicitly calls security theater).
+
+## Known limitations (tracked, not yet fixed)
+
+### KL-1: path-tenant vs key-tenant mismatch does not fail-closed (issue #15)
+- **Current behavior:** The authoritative tenant identity comes from the API key
+  (`auth.get_tenant_from_header`), and the `{tenant}` path segment is informational only
+  (per defense-in-depth point 1). A request to `/api/v1/{path_tenant}/documents` with a key
+  for `key_tenant` is resolved to `key_tenant` and returns **200 with `key_tenant`'s own
+  data**. It does NOT 404/403 on the mismatch — i.e. it is *lenient*, not fail-closed.
+- **Already fail-closed elsewhere:** the jobs route (`/{tenant}/ingest/jobs/...`) 404s when
+  the path tenant does not match the key's tenant, so behavior is inconsistent across routes.
+- **Why this is acceptable today:** because isolation is structural (Silo — per-tenant
+  collection), a `path_tenant≠key_tenant` call can never read another tenant's data; it
+  simply reads the key's own tenant. The practical invariant ("a key only ever sees its own
+  tenant's data") already holds. The gap is *strictness of input validation*, not data leakage.
+- **Owner:** this is tenancy/key-tier hardening and belongs to the P0/P1 security work owned
+  by the parallel orchestrator session. **Do not modify tenancy/key-tier code here.** The
+  intended fix is to 404/403 the documents route on path≠key (matching the jobs route) once
+  the orchestrator lands the broader tenancy hardening.
+- **Test:** `tests/test_phase_h_known_limits.py::test_path_tenant_mismatch_is_key_scoped`
+  asserts the *current* lenient behavior so the gap is tracked; it carries a TODO to flip to
+  fail-closed when the orchestrator's hardening lands.

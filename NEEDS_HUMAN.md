@@ -61,3 +61,8 @@ credentials/decisions. Recorded, not blocked-on:
   exposed read-only.
 - **npm publish of `@hermes-rag/sdk`** — needs an npm token (see B1/open item above).
 - **Public DNS + TLS for hosted widget/API** — needs domain + cert (infra decision).
+- **Per-tenant request rate limiting (KL-2, Phase I)** — `rate_limit()` exists but is fleet-wide /
+  best-effort, not a per-tenant quota enforced at the edge. The per-tenant *chunk* quota
+  (`TENANT_CHUNK_QUOTA`) is enforced at ingest, but there is no per-tenant *request-rate* ceiling yet.
+  Tracked as Phase I work; recorded here so the gap is visible. Not in this agent's scope to add
+  (it is tenancy/key-tier-adjacent and overlaps the orchestrator's P0/P1 hardening).
