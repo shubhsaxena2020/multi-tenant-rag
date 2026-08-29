@@ -25,6 +25,22 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _ensure_leads_table(session) -> None:
+    await session.execute(text("""
+        CREATE TABLE IF NOT EXISTS leads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id TEXT NOT NULL,
+            session_id TEXT,
+            question TEXT,
+            name TEXT,
+            email TEXT,
+            phone TEXT,
+            message TEXT,
+            ts TIMESTAMP WITH TIME ZONE NOT NULL
+        )
+    """))
+
+
 def _valid_email(email: str | None) -> bool:
     return bool(email) and bool(_EMAIL_RE.match(email)) and len(email) <= 320
 
@@ -62,19 +78,7 @@ async def save_lead(
         raise ValueError("invalid phone")
     session_maker = get_session_maker()
     async with session_maker() as session:
-        await session.execute(text("""
-            CREATE TABLE IF NOT EXISTS leads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tenant_id TEXT NOT NULL,
-                session_id TEXT,
-                question TEXT,
-                name TEXT,
-                email TEXT,
-                phone TEXT,
-                message TEXT,
-                ts TIMESTAMP WITH TIME ZONE NOT NULL
-            )
-        """))
+        await _ensure_leads_table(session)
         result = await session.execute(text("""
             INSERT INTO leads (tenant_id, session_id, question, name, email, phone, message, ts)
             VALUES (:tenant_id, :session_id, :question, :name, :email, :phone, :message, :ts)
@@ -96,6 +100,7 @@ async def save_lead(
 async def list_leads(tenant_id: str, *, limit: int = 100) -> list[dict]:
     session_maker = get_session_maker()
     async with session_maker() as session:
+        await _ensure_leads_table(session)
         rows = (await session.execute(text("""
             SELECT id, tenant_id, session_id, question, name, email, phone, message, ts
             FROM leads WHERE tenant_id = :tenant_id ORDER BY ts DESC LIMIT :limit
@@ -109,6 +114,7 @@ async def list_leads(tenant_id: str, *, limit: int = 100) -> list[dict]:
 async def get_lead_summary(tenant_id: str) -> dict:
     session_maker = get_session_maker()
     async with session_maker() as session:
+        await _ensure_leads_table(session)
         total = (await session.execute(text(
             "SELECT COUNT(*) FROM leads WHERE tenant_id = :tenant_id"),
             {"tenant_id": tenant_id})).scalar() or 0

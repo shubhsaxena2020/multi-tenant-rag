@@ -101,6 +101,7 @@ from .observability import (
 from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
 from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .leads import get_lead_summary, list_leads, save_lead
+from .analytics import get_analytics_csv_rows, get_tenant_analytics
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -629,6 +630,38 @@ async def admin_leads(tenant: str, _: None = Depends(require_admin), limit: int 
         return Response(content=csv_text, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=leads_{tenant}.csv"})
     return {"summary": summary, "entries": entries}
+
+
+# ---------------- Admin: unified per-tenant analytics (PHASE E #37) ----------------
+@app.get("/admin/analytics/{tenant}", response_model=dict)
+async def admin_analytics(tenant: str, _: None = Depends(require_admin), days: int = 30, fmt: str = "json"):
+    """Operator-only unified analytics for a tenant (issue #37): combines usage volume,
+    out-of-scope rate, answer-quality feedback, handoff->lead funnel, and top questions into
+    one aggregate. `fmt=csv` exports a daily timeseries enriched with headline metrics."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    if fmt == "csv":
+        import csv
+        import io
+
+        rows = await get_analytics_csv_rows(tenant, days=days)
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["date", "queries", "docs_ingested", "chunks_ingested", "eval_runs",
+                    "out_of_scope_rate", "feedback_up", "feedback_down", "leads_total",
+                    "handoff_capture_rate"])
+        for r in rows:
+            w.writerow([r["date"], r["queries"], r["docs_ingested"], r["chunks_ingested"],
+                        r["eval_runs"], r["out_of_scope_rate"], r["feedback_up"],
+                        r["feedback_down"], r["leads_total"], r["handoff_capture_rate"]])
+        csv_text = buf.getvalue()
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=analytics_{tenant}.csv"})
+
+    return await get_tenant_analytics(tenant, days=days)
 
 
 # ---------------- Admin: tenants ----------------
@@ -1218,8 +1251,10 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
               "out_of_scope": (not in_scope), "degraded": degraded},
     )
     # PHASE D (#27): reliable per-tenant usage metering (business value), distinct from the
-    # sampled audit trail. One query == one billable event.
-    await record_usage(auth.tenant_id, "query")
+    # sampled audit trail. One query == one billable event. PHASE E: persist out_of_scope in
+    # meta so analytics can compute the out-of-scope rate (uses the same in-scope signal the
+    # response already returns — non-P0/P1 analytics enrichment, not a new security behavior).
+    await record_usage(auth.tenant_id, "query", meta={"out_of_scope": bool(not in_scope)})
     return QueryResponse(
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
@@ -1251,8 +1286,8 @@ def query_stream(
     # /query, so it MUST enforce the same rate limit. Without this an authenticated
     # tenant could hammer /query/stream with zero quota enforcement.
     rate_limit(request, auth.tenant_id)
-    # PHASE D (#27): each stream is one billable query (same as /query).
-    record_usage_bg(auth.tenant_id, "query")
+    # PHASE D (#27): each stream is one billable query (same as /query). Recorded inside _sse
+    # after in_scope is known so PHASE E analytics can carry the out_of_scope meta flag.
 
     def _sse():
         try:
@@ -1274,6 +1309,8 @@ def query_stream(
                 degraded = True
             hits = [h for h in hits if not detect_injection(h["text"])]
             in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
+            # PHASE D (#27): one billable query. PHASE E: persist out_of_scope in meta for analytics.
+            record_usage_bg(auth.tenant_id, "query", meta={"out_of_scope": bool(not in_scope)})
 
             # Include source_url so the widget can render clickable citations (PHASE C #6).
             # doc_id + chunk_id let the widget deep-link to the hosted viewer when no external
