@@ -692,3 +692,88 @@ def test_cors_preflight_lists_methods_headers(monkeypatch):
     assert "authorization" in pre.headers.get("access-control-allow-headers", "").lower()
 
 
+# ---------------- P1 #9: publishable (read-only) vs secret key tiers ----------------
+def _make_tenant(client, name):
+    r = client.post(f"{V}/tenants", json={"name": name}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
+    assert r.status_code == 201, r.text
+    return r.json()["api_key"]
+
+
+def test_publishable_key_can_query_but_not_ingest(client):
+    """P1 #9: a publishable key (pk_*) may READ (query) but is 403 on any write."""
+    secret = _make_tenant(client, "pktenant")
+    pub_r = client.post(f"{V}/pktenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    assert pub_r.status_code == 201, pub_r.text
+    pk = pub_r.json()["api_key"]
+    assert pk.startswith("pk_")
+
+    # Read is allowed (no docs yet -> empty results, 200).
+    q = client.post(f"{V}/pktenant/query", json={"question": "hi"}, headers={"Authorization": f"Bearer {pk}"})
+    assert q.status_code == 200, q.text
+
+    # Write is forbidden.
+    ing = client.post(f"{V}/pktenant/documents", json={"title": "x", "content": "y"},
+                      headers={"Authorization": f"Bearer {pk}"})
+    assert ing.status_code == 403
+    assert "read-only" in ing.json()["detail"].lower()
+
+
+def test_secret_key_still_has_full_power(client):
+    """P1 #9: the secret key (rk_*) continues to work for ingest + key management."""
+    secret = _make_tenant(client, "sktenant")
+    ing = client.post(f"{V}/sktenant/documents", json={"title": "x", "content": "y"},
+                      headers={"Authorization": f"Bearer {secret}"})
+    assert ing.status_code == 201, ing.text
+    # Can mint a publishable key and list keys (kind surfaced).
+    pub = client.post(f"{V}/sktenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    assert pub.status_code == 201
+    lst = client.get(f"{V}/sktenant/keys", headers={"Authorization": f"Bearer {secret}"})
+    assert lst.status_code == 200
+    kinds = {k["kind"] for k in lst.json()["keys"]}
+    assert "secret" in kinds and "publishable" in kinds
+
+
+def test_publishable_key_resolves_same_tenant_isolation_intact(client):
+    """P1 #9: a publishable key resolves to its OWN tenant only — cross-tenant reads
+    remain impossible even with a read-only key (isolation path untouched).
+
+    The tenant is derived server-side from the key, so a publishable key for A can only
+    ever query A's collection, no matter what {tenant} path segment is used.
+    """
+    a_key = _make_tenant(client, "tenantA")
+    b_key = _make_tenant(client, "tenantB")
+    # tenant A ingests a confidential doc under its secret key
+    ing_a = client.post(f"{V}/tenantA/documents", json={"title": "secret-doc", "content": "confidential-A-data"},
+                        headers={"Authorization": f"Bearer {a_key}"})
+    assert ing_a.status_code == 201
+    # tenant B ingests a DIFFERENT confidential doc under its secret key
+    ing_b = client.post(f"{V}/tenantB/documents", json={"title": "b-doc", "content": "confidential-B-data"},
+                        headers={"Authorization": f"Bearer {b_key}"})
+    assert ing_b.status_code == 201
+    # tenant A mints a publishable key
+    pub = client.post(f"{V}/tenantA/keys/publishable", headers={"Authorization": f"Bearer {a_key}"})
+    pk_a = pub.json()["api_key"]
+    # Querying under A's own namespace returns A's data (read allowed).
+    qa = client.post(f"{V}/tenantA/query", json={"question": "confidential"}, headers={"Authorization": f"Bearer {pk_a}"})
+    assert qa.status_code == 200
+    assert any("confidential-A-data" in h["text"] for h in qa.json()["results"])
+    # A publishable key must NEVER surface B's data, even if the path says tenantB
+    # (the tenant is resolved from the key, not the path).
+    qb = client.post(f"{V}/tenantB/query", json={"question": "confidential"}, headers={"Authorization": f"Bearer {pk_a}"})
+    assert qb.status_code == 200
+    assert all("confidential-B-data" not in h["text"] for h in qb.json()["results"])
+    # and the key is not even valid for B's *write* surface (defense in depth):
+    assert client.post(f"{V}/tenantB/documents", json={"title": "x", "content": "y"},
+                       headers={"Authorization": f"Bearer {pk_a}"}).status_code == 403
+
+
+def test_publishable_key_cannot_rotate_or_revoke(client):
+    """P1 #9: a leaked publishable key cannot reconfigure the tenant (rotate/revoke 403)."""
+    secret = _make_tenant(client, "cfgtenant")
+    pub = client.post(f"{V}/cfgtenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    pk = pub.json()["api_key"]
+    assert client.post(f"{V}/cfgtenant/keys", headers={"Authorization": f"Bearer {pk}"}).status_code == 403
+    assert client.delete(f"{V}/cfgtenant/keys/rk_xxxx", headers={"Authorization": f"Bearer {pk}"}).status_code == 403
+
+
+
