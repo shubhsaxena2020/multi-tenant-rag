@@ -56,6 +56,7 @@ from .conversation import (
 from .retrieval.rewrite import rewrite_query as pre_retrieval_rewrite
 from .retrieval.agentic import retrieve_multi_hop, multihop_denied
 from .faithfulness import score_faithfulness, is_refusal
+from .quality_store import record_quality_bg
 from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
@@ -99,6 +100,7 @@ from .observability import (
     RETRIEVAL_LATENCY,
     REWRITE_USED,
     FAITHFULNESS_SCORE,
+    NO_ANSWER_TOTAL,
     MetricsMiddleware,
     get_logger,
     metrics_response,
@@ -1397,6 +1399,30 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     # meta so analytics can compute the out-of-scope rate (uses the same in-scope signal the
     # response already returns — non-P0/P1 analytics enrichment, not a new security behavior).
     await record_usage(auth.tenant_id, "query", meta={"out_of_scope": bool(not in_scope)})
+
+    # PHASE E (#25): persist retrieval-quality signals for trending/dashboards.
+    if not answerable:
+        NO_ANSWER_TOTAL.inc()
+    rerank_delta = None
+    if hits:
+        try:
+            rerank_delta = max(
+                (h.get("rerank_score", h.get("score", 0.0)) - h.get("score", 0.0))
+                for h in hits
+            )
+        except Exception:
+            rerank_delta = None
+    record_quality_bg(
+        auth.tenant_id,
+        latency_ms=round((time.perf_counter() - t0) * 1000, 2),
+        hit_count=len(hits),
+        faithfulness=faithfulness,
+        rerank_delta=rerank_delta,
+        rewrite_used=was_rewritten,
+        multi_hop=bool(hop_count and hop_count > 1),
+        no_answer=bool(not answerable),
+    )
+
     return QueryResponse(
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,

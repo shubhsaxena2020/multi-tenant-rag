@@ -59,6 +59,9 @@ FAITHFULNESS_SCORE = Histogram(
     "rag_faithfulness", "Answer faithfulness (grounding) score per generated answer",
     buckets=(0.0, 0.2, 0.4, 0.6, 0.8, 1.01)
 )
+NO_ANSWER_TOTAL = Counter(
+    "rag_no_answer_total", "Queries that returned a safe no-answer (unanswerable / out of scope)"
+)
 
 # ---------------- v9-5: SLO tracking ----------------
 # Availability = successful (non-5xx) responses / total. Latency SLO = p95 under target.
