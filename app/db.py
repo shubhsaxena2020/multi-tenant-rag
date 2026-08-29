@@ -45,6 +45,12 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     allowed_groups: Mapped[str] = mapped_column(Text, default='["*"]', nullable=False)
+    # PHASE D.3: per-tenant custom system prompt / persona. Empty = service default.
+    system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # PHASE D.2: optional human-handoff lead webhook (generic POST). Empty = store only.
+    # Live endpoint config is an operator/human step; default is store-only with safe
+    # mock webhook in tests.
+    lead_webhook_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
 class TenantKey(Base):
@@ -322,6 +328,8 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "created_at": t.created_at,
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
+                "system_prompt": t.system_prompt or "",
+                "lead_webhook_url": t.lead_webhook_url or "",
             }
     else:
         async with session as s:
@@ -342,6 +350,8 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "created_at": t.created_at,
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
+                "system_prompt": t.system_prompt or "",
+                "lead_webhook_url": t.lead_webhook_url or "",
             }
 
 
@@ -659,3 +669,139 @@ def _document_row_to_dict(row: Document) -> dict:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# PHASE D — business value: thumbs feedback, human-handoff leads, persona config
+# ---------------------------------------------------------------------------
+
+
+class Feedback(Base):
+    """PHASE D.1: thumbs up/down on answers. Tenant-scoped. Drives answer-quality signal."""
+
+    __tablename__ = "feedback"
+
+    feedback_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    rating: Mapped[str] = mapped_column(String(8), nullable=False)  # up | down
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    doc_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class Lead(Base):
+    """PHASE D.2: human-handoff / lead capture for out-of-scope queries. Tenant-scoped.
+    Optional lead_webhook_url on the tenant triggers a best-effort generic POST; storage
+    is always the source of truth (webhook failures never lose the lead)."""
+
+    __tablename__ = "leads"
+
+    lead_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    question: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+async def save_feedback(
+    tenant_id: str, rating: str, *, question: str | None = None,
+    doc_id: str | None = None, session_id: str | None = None, comment: str | None = None,
+    session: AsyncSession | None = None,
+) -> str:
+    import uuid
+
+    fid = f"fb_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(UTC)
+    async with (session or get_session_maker())() as s:
+        s.add(Feedback(
+            feedback_id=fid, tenant_id=tenant_id, rating=rating, question=question,
+            doc_id=doc_id, session_id=session_id, comment=comment, created_at=now,
+        ))
+        await s.commit()
+    return fid
+
+
+async def list_feedback(tenant_id: str, limit: int = 200, session: AsyncSession | None = None) -> list[dict]:
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(Feedback)
+            .where(Feedback.tenant_id == tenant_id)
+            .order_by(Feedback.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [
+            {
+                "feedback_id": r.feedback_id, "rating": r.rating, "question": r.question,
+                "doc_id": r.doc_id, "session_id": r.session_id, "comment": r.comment,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
+
+async def save_lead(
+    tenant_id: str, *, name: str | None = None, email: str | None = None,
+    question: str | None = None, context: str | None = None,
+    session: AsyncSession | None = None,
+) -> str:
+    import uuid
+
+    lid = f"lead_{uuid.uuid4().hex[:16]}"
+    now = datetime.now(UTC)
+    async with (session or get_session_maker())() as s:
+        s.add(Lead(
+            lead_id=lid, tenant_id=tenant_id, name=name, email=email,
+            question=question, context=context, created_at=now,
+        ))
+        await s.commit()
+    return lid
+
+
+async def list_leads(tenant_id: str, limit: int = 200, session: AsyncSession | None = None) -> list[dict]:
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(Lead)
+            .where(Lead.tenant_id == tenant_id)
+            .order_by(Lead.created_at.desc())
+            .limit(limit)
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [
+            {
+                "lead_id": r.lead_id, "name": r.name, "email": r.email,
+                "question": r.question, "context": r.context,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+
+
+async def set_tenant_system_prompt(tenant_id: str, prompt: str, session: AsyncSession | None = None) -> bool:
+    """PHASE D.3: persist a per-tenant custom system prompt / persona (non-destructive)."""
+    async with (session or get_session_maker())() as s:
+        stmt = update(Tenant).where(Tenant.tenant_id == tenant_id).values(system_prompt=prompt)
+        res = await s.execute(stmt)
+        await s.commit()
+        return res.rowcount > 0
+
+
+async def set_tenant_lead_webhook(tenant_id: str, url: str, session: AsyncSession | None = None) -> bool:
+    """PHASE D.2: persist an optional lead webhook URL (generic POST target)."""
+    async with (session or get_session_maker())() as s:
+        stmt = update(Tenant).where(Tenant.tenant_id == tenant_id).values(lead_webhook_url=url)
+        res = await s.execute(stmt)
+        await s.commit()
+        return res.rowcount > 0
+
+
+async def get_lead_webhook_url(tenant_id: str, session: AsyncSession | None = None) -> str | None:
+    """Return a tenant's lead webhook URL if configured (PHASE D.2)."""
+    t = await get_tenant(tenant_id, session)
+    if not t:
+        return None
+    return t.get("lead_webhook_url")

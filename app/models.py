@@ -33,6 +33,9 @@ class TenantOut(BaseModel):
     created_at: datetime
     chunk_count: int = 0
     allowed_groups: list[str] = ["*"]
+    # PHASE D.3 / D.2: per-tenant persona + human-handoff lead webhook (empty = defaults).
+    system_prompt: str = ""
+    lead_webhook_url: str = ""
 
 
 # Alias for backward compatibility with db layer

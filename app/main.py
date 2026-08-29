@@ -41,6 +41,7 @@ from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
 from .models import (
+    BaseModel,
     DocumentCatalogOut,
     DocumentCreate,
     DocumentOut,
@@ -1144,6 +1145,128 @@ async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request
     if body.get("save"):
         await save_golden_set(auth.tenant_id, items)
     return {"generated": [it.__dict__ for it in items], "judge_available": judge.available}
+
+
+# ---------------- PHASE D: business value ----------------
+from .db import save_feedback, list_feedback, save_lead, list_leads, set_tenant_system_prompt, set_tenant_lead_webhook
+from .auth import require_secret_or_publishable
+from .webhook import dispatch_lead_webhook
+
+
+class FeedbackIn(BaseModel):
+    rating: str  # "up" | "down"
+    question: str | None = None
+    doc_id: str | None = None
+    session_id: str | None = None
+    comment: str | None = None
+
+
+class LeadIn(BaseModel):
+    name: str | None = None
+    email: str | None = None
+    question: str | None = None
+    context: str | None = None
+
+
+class TenantConfigIn(BaseModel):
+    system_prompt: str | None = None
+    lead_webhook_url: str | None = None
+
+
+@v1.post("/{tenant}/feedback", status_code=status.HTTP_201_CREATED)
+async def post_feedback(tenant: str, body: FeedbackIn, auth: TenantDep, request: Request,
+                        _: None = Depends(require_secret_or_publishable)):
+    """PHASE D.1: thumbs up/down on an answer. Allowed with the publishable key too
+    (benign, non-destructive) so the embeddable widget can capture ratings client-side."""
+    rate_limit(request, auth.tenant_id)
+    if body.rating not in ("up", "down"):
+        raise HTTPException(status_code=422, detail="rating must be 'up' or 'down'")
+    fid = await save_feedback(
+        auth.tenant_id, body.rating, question=body.question, doc_id=body.doc_id,
+        session_id=body.session_id, comment=body.comment,
+    )
+    await _audit_data_plane("tenant.feedback", auth.tenant_id, target=fid,
+                           meta={"rating": body.rating})
+    return {"feedback_id": fid, "rating": body.rating}
+
+
+@v1.get("/{tenant}/feedback", response_model=list[dict])
+async def get_feedback(tenant: str, auth: TenantDep, request: Request,
+                       _: None = Depends(require_secret_key), limit: int = 200):
+    rate_limit(request, auth.tenant_id)
+    return await list_feedback(auth.tenant_id, limit=limit)
+
+
+@v1.post("/{tenant}/lead", status_code=status.HTTP_201_CREATED)
+async def post_lead(tenant: str, body: LeadIn, auth: TenantDep, request: Request,
+                    _: None = Depends(require_secret_key)):
+    """PHASE D.2: human-handoff / lead capture for out-of-scope queries. Secret-key only
+    (may carry PII/email). Stored unconditionally; if a lead webhook is configured, a
+    best-effort POST is fired — webhook failure never drops the lead or fails this call."""
+    rate_limit(request, auth.tenant_id)
+    lid = await save_lead(
+        auth.tenant_id, name=body.name, email=body.email, question=body.question,
+        context=body.context,
+    )
+    # Best-effort outbound webhook (generic). The DB row is already the source of truth.
+    from .db import get_lead_webhook_url
+
+    webhook_url = await get_lead_webhook_url(auth.tenant_id)
+    if webhook_url:
+        payload = {
+            "lead_id": lid, "tenant_id": auth.tenant_id, "name": body.name,
+            "email": body.email, "question": body.question, "context": body.context,
+        }
+        # Fire-and-forget; do not block the response on the webhook.
+        try:
+            import asyncio
+
+            asyncio.create_task(dispatch_lead_webhook(webhook_url, payload))
+        except Exception:  # noqa: BLE001 — never fail the inbound lead capture
+            pass
+    await _audit_data_plane("tenant.lead", auth.tenant_id, target=lid,
+                           meta={"has_email": bool(body.email)})
+    return {"lead_id": lid}
+
+
+@v1.get("/{tenant}/leads", response_model=list[dict])
+async def get_leads(tenant: str, auth: TenantDep, request: Request,
+                    _: None = Depends(require_secret_key), limit: int = 200):
+    rate_limit(request, auth.tenant_id)
+    return await list_leads(auth.tenant_id, limit=limit)
+
+
+@v1.get("/{tenant}/config", response_model=dict)
+async def get_config(tenant: str, auth: TenantDep, request: Request,
+                     _: None = Depends(require_secret_key)):
+    """PHASE D.3: read the tenant's persona (system_prompt) + lead webhook (masked)."""
+    rate_limit(request, auth.tenant_id)
+    row = await tenants.get_tenant(auth.tenant_id)
+    webhook = (row or {}).get("lead_webhook_url", "") if isinstance(row, dict) else getattr(row, "lead_webhook_url", "")
+    return {
+        "tenant_id": auth.tenant_id,
+        "system_prompt": (row or {}).get("system_prompt", "") if isinstance(row, dict) else getattr(row, "system_prompt", ""),
+        "lead_webhook_configured": bool(webhook),
+    }
+
+
+@v1.post("/{tenant}/config", status_code=status.HTTP_200_OK)
+async def set_config(tenant: str, body: TenantConfigIn, auth: TenantDep, request: Request,
+                     _: None = Depends(require_secret_key)):
+    """PHASE D.3: set a per-tenant custom system prompt / persona (and optional webhook)."""
+    rate_limit(request, auth.tenant_id)
+    if body.system_prompt is not None:
+        await set_tenant_system_prompt(auth.tenant_id, body.system_prompt)
+    if body.lead_webhook_url is not None:
+        # Basic URL sanity; only http(s) allowed. Live endpoint remains an operator step.
+        import re
+
+        if body.lead_webhook_url and not re.match(r"^https?://", body.lead_webhook_url):
+            raise HTTPException(status_code=422, detail="lead_webhook_url must be http(s)")
+        await set_tenant_lead_webhook(auth.tenant_id, body.lead_webhook_url)
+    await _audit_data_plane("tenant.config", auth.tenant_id,
+                           meta={"system_prompt_set": body.system_prompt is not None})
+    return {"ok": True}
 
 
 # Mount the versioned API

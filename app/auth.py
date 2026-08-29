@@ -71,6 +71,25 @@ async def require_secret_key(
         )
 
 
+async def require_secret_or_publishable(
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> None:
+    """PHASE D.1: allow BOTH secret (rk_*) and publishable (pk_*) keys for benign,
+    non-destructive interactions the widget performs client-side (e.g. thumbs feedback).
+    Anything destructive still uses require_secret_key(); this never grants write power,
+    only lets the embeddable widget record a rating with its publishable key.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or malformed Authorization header",
+        )
+    key = authorization.split(" ", 1)[1].strip()
+    kind = await tenants.get_key_kind(key)
+    if kind is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+
 def require_admin(
     admin_key: Annotated[str | None, Header(alias="Admin-Key")] = None,
     authorization: Annotated[str | None, Header()] = None,
