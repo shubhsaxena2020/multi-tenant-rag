@@ -78,100 +78,71 @@ function safeHref(url) {
   return null;
 }
 
-// Transform Markdown to a safer plain-text form that preserves emphasis via markers.
-// Input may contain attacker-controlled content (LLM answer can echo back poisoned
-// retrieved docs). We avoid innerHTML entirely and output plain text for textContent.
-// Strategy:
-//   1. Extract fenced code blocks and inline code spans into placeholders.
-//   2. Apply block- and inline-level transforms on the remaining plain text:
-//      - Headings (# ): convert to underline with === on next line.
-//      - Bold (**text** or __text__) -> **text** (keep double asterisks).
-//      - Italic (*text* or _text_) -> _text_ (underscores).
-//      - Links [text](url): if url passes safeHref (http/https), show "text (url)".
-//        Else show "[text](url)" (fallback).
-//      - Lists (- / * ): keep as is (they are already markers).
-//      - Blockquote (> ): keep as is.
-//   3. Restore code placeholders.
-//   4. Preserve line breaks and spacing.
-// This yields plain text that is safe to assign to textContent (no HTML).
-function renderMarkdownSafe(raw) {
+// Transform untrusted Markdown (LLM answers can echo poisoned retrieved docs) into XSS-safe
+// HTML via a strict allow-list renderer. We NEVER assign raw strings to innerHTML; instead every
+// text run is HTML-escaped and only a fixed set of safe tags is emitted. Links are restricted to
+// http(s) by safeHref. This yields real formatting (bold/italic/code/links/headings/lists) without
+// any script execution path.
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+// Inline-level Markdown -> safe HTML (called on already-escaped text for links' visible part).
+function renderMarkdownInline(s) {
+  var t = escapeHtml(s);
+  t = t.replace(/`([^`\n]+)`/g, function (_, c) { return "<code>" + c + "</code>"; });
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+  t = t.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_, text, url) {
+    var h = safeHref(url);
+    return h
+      ? '<a href="' + escapeHtml(h) + '" target="_blank" rel="noopener noreferrer">' + text + "</a>"
+      : "[" + text + "](" + escapeHtml(url) + ")";
+  });
+  return t;
+}
+
+// Block-level Markdown -> safe HTML string (safe to assign to a container's innerHTML because
+// every text node was escaped and only known tags are emitted).
+function renderMarkdown(raw) {
   if (raw == null) return "";
   var s = String(raw);
-  // 1. Extract fenced code blocks first.
-  var codeBlocks = [];
+  var blocks = [];
   s = s.replace(/```[^\n]*\n([\s\S]*?)```/g, function (_, body) {
-    var idx = codeBlocks.push("\n\n```\n" + body + "\n```\n") - 1;
-    return "\u0000CODE" + idx + "\u0000";
+    var idx = blocks.push("<pre><code>" + escapeHtml(body) + "</code></pre>") - 1;
+    return " CODE" + idx + " ";
   });
-  // 2. Extract inline code spans.
-  var inlineCodes = [];
-  s = s.replace(/`([^`\n]+)`/g, function (_, body) {
-    var idx = inlineCodes.push("`" + body + "`") - 1;
-    return "\u0000IC" + idx + "\u0000";
-  });
-  // 3. Split into lines for block-level processing.
-  var lines = s.split(/\n/);
-  var out = [];
-  var i = 0;
+  var lines = s.split("\n");
+  var out = [], i = 0;
   while (i < lines.length) {
     var ln = lines[i];
-    // Headings: convert to underline with === on next line.
     var hm = ln.match(/^(#{1,3})\s+(.*)$/);
-    if (hm) {
-      var level = hm[1].length;
-      var text = hm[2];
-      out.push(text);
-      out.push("=".repeat(text.length));
-      i++;
-      continue;
-    }
-    // Blockquote: keep > prefix.
-    if (/^>\s/.test(ln)) {
-      out.push(ln);
-      i++;
-      continue;
-    }
-    // Unordered list.
+    if (hm) { out.push("<h" + hm[1].length + ">" + escapeHtml(hm[2]) + "</h" + hm[1].length + ">"); i++; continue; }
+    if (/^>\s/.test(ln)) { out.push("<blockquote>" + renderMarkdownInline(ln.replace(/^>\s/, "")) + "</blockquote>"); i++; continue; }
     if (/^[-*]\s/.test(ln)) {
-      out.push(ln);
-      i++;
-      continue;
+      var ul = [];
+      while (i < lines.length && /^[-*]\s/.test(lines[i])) { ul.push("<li>" + renderMarkdownInline(lines[i].replace(/^[-*]\s/, "")) + "</li>"); i++; }
+      out.push("<ul>" + ul.join("") + "</ul>"); continue;
     }
-    // Ordered list.
     if (/^\d+\.\s/.test(ln)) {
-      out.push(ln);
-      i++;
-      continue;
+      var ol = [];
+      while (i < lines.length && /^\d+\.\s/.test(lines[i])) { ol.push("<li>" + renderMarkdownInline(lines[i].replace(/^\d+\.\s/, "")) + "</li>"); i++; }
+      out.push("<ol>" + ol.join("") + "</ol>"); continue;
     }
-    // Blank line.
-    if (/^\s*$/.test(ln)) {
-      out.push("");
-      i++;
-      continue;
-    }
-    // Paragraph line: just keep the line as is (will be joined with \n later).
-    out.push(ln);
-    i++;
+    if (/^\s*$/.test(ln)) { i++; continue; }
+    out.push("<p>" + renderMarkdownInline(ln) + "</p>"); i++;
   }
-  // 4. Join lines back together.
-  s = out.join("\n");
-  // 5. Inline transforms on the remaining plain text.
-  // Links [text](url) -> text (url) if safe, else [text](url) as fallback.
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_, text, url) {
-    var h = safeHref(url);
-    return h ? text + " (" + h + ")" : "[" + text + "](" + url + ")";
-  });
-  // Bold **text** or __text__ -> **text** (keep double asterisks for visual weight).
-  s = s.replace(/\*\*([^*\n]+)\*\*/g, "**$1**");
-  s = s.replace(/__([^_\n]+)__/g, "**$1**");
-  // Italic *text* or _text_ -> _text_ (underscores).
-  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1_$2_");
-  s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1_$2_");
-  // 6. Restore code placeholders.
-  s = s.replace(/\u0000IC(\d+)\u0000/g, function (_, k) { return inlineCodes[+k]; });
-  s = s.replace(/\u0000CODE(\d+)\u0000/g, function (_, k) { return codeBlocks[+k]; });
-  return s;
+  var html = out.join("");
+  html = html.replace(/ CODE(\d+) /g, function (_, k) { return blocks[+k]; });
+  return html;
 }
+
+// Back-compat alias: callers that expected plain-text rendering now get formatted, safe HTML.
+function renderMarkdownSafe(raw) { return renderMarkdown(raw); }
 /* @rag-md-safe:end */
 
 /* @rag-branding:start */
@@ -247,8 +218,8 @@ function addMsg(cls, text, sources, opts) {
     // User messages: plain textContent.
     body.textContent = text || "";
   } else {
-    // Bot answer: safe Markdown plain-text transformation.
-    body.textContent = renderMarkdownSafe(text || "");
+    // Bot answer: XSS-safe formatted Markdown (allow-list renderer; every text node escaped).
+    body.innerHTML = renderMarkdown(text || "");
   }
   d.appendChild(body);
   if (sources && sources.length) {
