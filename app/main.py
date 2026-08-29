@@ -1,1 +1,696 @@
-PLACEHOLDER_MAIN
+"""FastAPI application: multi-tenant RAG service, versioned under /api/v1.
+
+Isolation: tenant identity is derived server-side from the Bearer API key on every
+request (never from the request body). All vector operations are scoped to the
+tenant's own Qdrant collection, so cross-tenant reads are structurally impossible.
+
+Versioning: all tenant-facing routes live under /api/v1 (mounted sub-app). The
+OpenAPI schema is served at /api/v1/openapi.json and interactive docs at /api/v1/docs.
+Operability: structured JSON logging + Prometheus metrics at /metrics; per-tenant and
+per-IP rate limiting on every tenant route.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+import uuid
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+
+from . import jobs as job_store
+from . import tenants
+from .audit import append_audit, list_audit, verify_chain
+from .auth import generate_api_key, get_tenant_from_header, require_admin
+from .config import get_settings
+from .conversation import (
+    assess_confidence,
+    detect_injection,
+    get_session_store,
+    rewrite_query,
+)
+from .generation import generate_answer, stream_answer
+from .ingestion import ingest_text, ingest_url
+from .ingestion.runner import submit
+from .models import (
+    DocumentCreate,
+    DocumentOut,
+    EvalReportOut,
+    EvalSetIn,
+    IngestJobRequest,
+    IngestText,
+    IngestUrl,
+    JobStatus,
+    KeyInfo,
+    QueryRequest,
+    QueryResponse,
+    RetrievedChunk,
+    TenantCreate,
+    TenantKeysOut,
+    TenantOut,
+)
+from .observability import (
+    INGEST_CHUNKS,
+    INGEST_JOBS,
+    QUERY_HITS,
+    RETRIEVAL_LATENCY,
+    MetricsMiddleware,
+    get_logger,
+    metrics_response,
+)
+from .ratelimit import rate_limit
+from .rbac import (
+    PUBLIC_GROUP,
+    build_acl_filter,
+    resolve_acl,
+)
+from .resilience import RagError, circuit_status
+from .retrieval import retrieve
+from .validation import (
+    validate_content,
+    validate_content_type,
+    validate_metadata,
+)
+from .vector_store import (
+    delete_document,
+    delete_tenant_collection,
+    ensure_collection,
+    get_client,
+)
+
+log = get_logger("rag")
+
+# Public root app (health, metrics, docs). Tenant API mounted at /api/v1.
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    try:
+        from .db import init_db, requeue_orphaned_jobs
+
+        await init_db()
+        recovered = await requeue_orphaned_jobs()
+        if recovered:
+            log.info("jobs_recovered_on_startup", extra={"recovered": recovered})
+    except Exception as e:
+        log.warning("startup_recovery_failed", extra={"error_type": type(e).__name__})
+    yield
+
+
+app = FastAPI(
+    lifespan=_lifespan,
+    title="RAG Service",
+    version="1.0.0",
+    description="Multi-tenant Retrieval-Augmented Generation service. Tenant API is "
+    "versioned under /api/v1. See /api/v1/docs for the interactive contract.",
+    openapi_url=None,
+)
+app.add_middleware(MetricsMiddleware)
+
+
+@app.exception_handler(RagError)
+async def _rag_error_handler(request: Request, exc: RagError):
+    log.warning(
+        "rag_error",
+        extra={"path": request.url.path, "error_type": type(exc).__name__,
+               "detail": exc.public_detail},
+    )
+    status_code = 503 if exc.degraded else 500
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": exc.public_detail,
+            "degraded": exc.degraded,
+            "detail": exc.internal if exc.internal else exc.public_detail,
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_error_handler(request: Request, exc: Exception):
+    if isinstance(exc, RagError):
+        return await _rag_error_handler(request, exc)
+    log.error("unhandled_error", extra={"path": request.url.path, "error_type": type(exc).__name__})
+    return JSONResponse(
+        status_code=500,
+        content={"error": "internal error", "degraded": False,
+                 "detail": type(exc).__name__},
+    )
+
+v1 = FastAPI(
+    title="RAG Service API",
+    version="1.0.0",
+    root_path="/api/v1",
+    description=(
+        "Versioned multi-tenant RAG API. Every tenant route requires "
+        "`Authorization: Bearer *** Tenant identity is resolved "
+        "server-side from the key; the {tenant} path segment is informational."
+    ),
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
+
+
+TenantDep = Annotated[tenants.TenantRow, Depends(get_tenant_from_header)]
+
+
+async def audit_event(action: str, actor: str, target: str = "", meta: dict | None = None) -> None:
+    if actor and actor != "system" and len(actor) > 12:
+        actor = "admin:" + hashlib.sha256(actor.encode()).hexdigest()[:12]
+    elif actor and actor != "system":
+        actor = "admin:" + actor
+    await append_audit(action, actor, target=target, meta=meta)
+
+
+def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, default_to_public: bool) -> list[str]:
+    eff = resolve_acl(requested, auth.allowed_groups, default_to_public=default_to_public)
+    if requested is not None:
+        dropped = [g for g in requested if g not in eff and g != PUBLIC_GROUP]
+        if dropped:
+            log.warning(
+                "rbac_self_escalation_blocked",
+                extra={"tenant_id": auth.tenant_id, "dropped_groups": dropped,
+                       "allowed": auth.allowed_groups},
+            )
+    return eff
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "rag-service", "version": "1.0.0"}
+
+
+@app.get("/health/deps")
+def health_deps():
+    return {
+        "status": "ok",
+        "circuit_breakers": {
+            "qdrant": circuit_status("qdrant"),
+            "embedder": circuit_status("embedder"),
+            "reranker": circuit_status("reranker"),
+        },
+    }
+
+
+@app.get("/health/ready")
+def ready():
+    try:
+        c = get_client()
+        c.get_collections()
+        return {"status": "ready", "qdrant": "reachable"}
+    except Exception as exc:
+        log.warning("qdrant_unreachable", extra={"error_type": type(exc).__name__})
+        raise HTTPException(status_code=503, detail="qdrant unreachable")
+
+
+def _frame_ancestors_csp() -> str:
+    origins = get_settings().allowed_embed_origins
+    if not origins:
+        return "frame-ancestors 'none'"
+    return "frame-ancestors " + " ".join(origins)
+
+
+@app.get("/widget.js")
+def widget_js():
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "widget.js"
+    body = p.read_text(encoding="utf-8")
+    return HTMLResponse(body, media_type="application/javascript",
+                        headers={"Content-Security-Policy": _frame_ancestors_csp()})
+
+
+@app.get("/widget.html")
+def widget_html():
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "widget.html"
+    body = p.read_text(encoding="utf-8")
+    return HTMLResponse(body, media_type="text/html",
+                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"}}
+
+
+@app.get("/health/slo")
+def health_slo():
+    from .config import get_settings
+    from .observability import compute_slo_status
+
+    s = get_settings()
+    status = compute_slo_status(s.slo_latency_p95_s, s.slo_availability)
+    status["status"] = "ok" if (status["availability_met"] and status["latency_met"]) else "breach"
+    return status
+
+
+@app.get("/metrics")
+def metrics(_: None = Depends(require_admin)):
+    body, ctype = metrics_response()
+    return body, {"content-type": ctype}
+
+
+@app.get("/api/v1/openapi.json")
+def openapi_schema(_: None = Depends(require_admin)):
+    return v1.openapi()
+
+
+@app.get("/api/v1/docs", include_in_schema=False)
+def docs(_: None = Depends(require_admin)):
+    from fastapi.openapi.docs import get_swagger_ui_html
+
+    return get_swagger_ui_html(openapi_url="/api/v1/openapi.json", title="RAG Service API")
+
+
+@app.get("/audit")
+async def audit_log(_: None = Depends(require_admin), limit: int = 200):
+    rows = await list_audit(limit=limit)
+    return {"entries": rows, "count": len(rows)}
+
+
+@app.get("/audit/verify")
+async def audit_verify(_: None = Depends(require_admin)):
+    return await verify_chain()
+
+
+@v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
+    tenant_id = f"t_{uuid.uuid4().hex[:12]}"
+    api_key = generate_api_key()
+    row = await tenants.create_tenant(body.name, tenant_id, api_key, body.plan, body.allowed_groups)
+    try:
+        ensure_collection(get_client())
+    except Exception as exc:
+        log.warning("ensure_collection failed for %s: %s", tenant_id, exc)
+    log.info("tenant_created", extra={"tenant_id": tenant_id, "tenant_name": body.name})
+    await audit_event(
+        "tenant.create", actor=admin_key, target=tenant_id,
+        meta={"name": body.name, "plan": body.plan, "allowed_groups": body.allowed_groups},
+    )
+    return TenantOut(
+        tenant_id=row.tenant_id, name=row.name, api_key=api_key,
+        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
+        allowed_groups=row.allowed_groups,
+    )
+
+
+@v1.get("/tenants", response_model=list[TenantOut])
+async def list_tenants(_: None = Depends(require_admin)):
+    return [
+        TenantOut(
+            tenant_id=t.tenant_id, name=t.name, api_key=f"{t.api_key_prefix}...",
+            plan=t.plan, created_at=t.created_at, chunk_count=t.chunk_count,
+        )
+        for t in await tenants.list_tenants()
+    ]
+
+
+@v1.delete("/tenants/{tenant_id}", status_code=status.HTTP_200_OK)
+async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(require_admin)):
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
+    dropped = delete_tenant_collection(tenant_id)
+    removed = await tenants.delete_tenant(tenant_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    log.info("tenant_offboarded", extra={"tenant_id": tenant_id, "collection_dropped": dropped})
+    await audit_event(
+        "tenant.delete", actor=admin_key, target=tenant_id,
+        meta={"collection_dropped": dropped},
+    )
+    return {"deleted": tenant_id, "collection_dropped": dropped}
+
+
+@v1.post("/{tenant}/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    validate_content(body.content)
+    ct = validate_content_type(body.content_type)
+    meta = validate_metadata(body.metadata)
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+    res = await ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=acl)
+    INGEST_CHUNKS.inc(res["chunk_count"])
+    INGEST_JOBS.labels(status="success").inc()
+    log.info("document_ingested", extra={"tenant_id": auth.tenant_id, "chunk_count": res["chunk_count"]})
+    return DocumentOut(
+        doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
+        content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+    )
+
+
+@v1.post("/{tenant}/ingest/url", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    meta = validate_metadata(body.metadata)
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+    res = await ingest_url(auth.tenant_id, body.url, body.title, meta, acl=acl)
+    INGEST_CHUNKS.inc(res["chunk_count"])
+    INGEST_JOBS.labels(status="success").inc()
+    return DocumentOut(
+        doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
+        content_type="html", metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+    )
+
+
+@v1.post("/{tenant}/ingest/text", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    validate_content(body.text)
+    ct = validate_content_type(body.content_type)
+    meta = validate_metadata(body.metadata)
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+    res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl)
+    INGEST_CHUNKS.inc(res["chunk_count"])
+    INGEST_JOBS.labels(status="success").inc()
+    return DocumentOut(
+        doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
+        content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+    )
+
+
+@v1.post("/{tenant}/ingest/jobs", response_model=JobStatus, status_code=status.HTTP_202_ACCEPTED)
+async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    s = get_settings()
+    from fastapi import HTTPException
+    from fastapi import status as _st
+
+    from .ratelimit import _limiter
+    allowed, retry = _limiter.hit(
+        f"ingest:{auth.tenant_id}", limit=s.rate_ingest_jobs_per_min, window_min=1
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=_st.HTTP_429_TOO_MANY_REQUESTS,
+            detail="ingest job rate limit exceeded (per tenant, per minute)",
+            headers={"Retry-After": str(retry)},
+        )
+    kind = body.kind
+    title = body.title
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+    if kind == "url":
+        if not body.url:
+            raise HTTPException(422, "url is required for kind=url")
+        payload = {"url": body.url, "title": title, "acl": acl}
+    elif kind == "text":
+        if not body.text:
+            raise HTTPException(422, "text is required for kind=text")
+        validate_content(body.text)
+        payload = {"text": body.text, "title": title, "content_type": body.content_type, "acl": acl}
+    elif kind == "document":
+        if not body.content:
+            raise HTTPException(422, "content is required for kind=document")
+        validate_content(body.content)
+        payload = {"content": body.content, "title": title, "content_type": body.content_type, "acl": acl}
+    else:
+        raise HTTPException(422, f"unknown kind: {kind}")
+    validate_content_type(body.content_type)
+    meta = validate_metadata(body.metadata)
+    job_id = await job_store.create_job(auth.tenant_id, kind, title or (body.url or "untitled"))
+    INGEST_JOBS.labels(status="pending").inc()
+    submit(job_id, auth.tenant_id, kind, payload, meta)
+    log.info("ingest_job_submitted", extra={"tenant_id": auth.tenant_id, "job_id": job_id, "kind": kind})
+    return JobStatus(
+        job_id=job_id, tenant_id=auth.tenant_id, kind=kind, status="pending",
+        progress=0.0, total_chunks=0, done_chunks=0, title=title,
+    )
+
+
+@v1.get("/{tenant}/jobs", response_model=list[JobStatus])
+async def list_ingest_jobs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+    rate_limit(request, auth.tenant_id)
+    return [JobStatus(**j) for j in await job_store.list_jobs(auth.tenant_id, limit)]
+
+
+@v1.get("/{tenant}/jobs/{job_id}", response_model=JobStatus)
+async def get_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    j = await job_store.get_job(job_id, auth.tenant_id)
+    if j is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return JobStatus(**j)
+
+
+@v1.delete("/{tenant}/jobs/{job_id}", status_code=status.HTTP_200_OK)
+async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    ok = await job_store.delete_job(job_id, auth.tenant_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="job not found")
+    return {"deleted": job_id}
+
+
+@v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
+async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    delete_document(auth.tenant_id, doc_id)
+    return {"deleted": doc_id}
+
+
+@v1.post("/{tenant}/query", response_model=QueryResponse)
+async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    s = get_settings()
+    t0 = time.perf_counter()
+
+    injection = bool(s.injection_guard_enabled) and detect_injection(body.question)
+
+    rewritten = body.question
+    was_rewritten = False
+    if s.rewrite_enabled and body.session_id:
+        rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+
+    acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
+    hits = []
+    degraded = False
+    try:
+        hits = retrieve(
+            auth.tenant_id, rewritten, top_k=body.top_k,
+            candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
+        )
+    except RagError as exc:
+        log.warning("query_degraded", extra={"tenant_id": auth.tenant_id, "error_type": type(exc).__name__})
+        degraded = True
+    original_len = len(hits)
+    hits = [hit for hit in hits if not detect_injection(hit["text"])]
+    filtered_len = len(hits)
+    if filtered_len < original_len:
+        log.warning(
+            "injection_detected_in_retrieved_chunks",
+            extra={"tenant_id": auth.tenant_id, "filtered_count": original_len - filtered_len},
+        )
+    RETRIEVAL_LATENCY.observe(time.perf_counter() - t0)
+    QUERY_HITS.observe(len(hits))
+
+    in_scope, _reason = assess_confidence(hits, s.retrieval_confidence_threshold)
+
+    results = [
+        RetrievedChunk(
+            chunk_id=h["chunk_id"], doc_id=h["doc_id"], title=h["title"],
+            text=h["text"],
+            score=h.get("rerank_score", h["score"]),
+            rerank_score=h.get("rerank_score"),
+            metadata=h.get("metadata", {}),
+        )
+        for h in hits
+    ]
+
+    answer = None
+    if body.generate:
+        if injection:
+            answer = ("I can't follow those instructions. Ask me a question about the "
+                      "documented content and I'll help.")
+        elif not in_scope:
+            answer = ("I don't have information on that in the available documents. "
+                      "Let me connect you with support, or try rephrasing your question.")
+        else:
+            answer = generate_answer(rewritten, hits)
+
+    turn_answer = answer or (hits[0]["text"] if hits else "")
+
+    if body.session_id:
+        store = get_session_store()
+        store.append(body.session_id, "user", body.question)
+        store.append(body.session_id, "assistant", turn_answer)
+
+    log.info("query", extra={"tenant_id": auth.tenant_id, "hits": len(hits),
+                             "generate": body.generate, "injection": injection,
+                             "out_of_scope": (not in_scope), "rewritten": was_rewritten})
+    return QueryResponse(
+        results=results, answer=answer, tenant_id=auth.tenant_id,
+        rewritten_query=rewritten if was_rewritten else None,
+        out_of_scope=not in_scope, injection_detected=injection,
+        degraded=degraded,
+    )
+
+
+@app.post("/api/v1/{tenant}/query/stream")
+def query_stream(
+    tenant: str,
+    body: QueryRequest,
+    auth: TenantDep,
+    request: Request,
+):
+    _ = tenant
+
+    rate_limit(request, auth.tenant_id)
+
+    def _sse():
+        try:
+            rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+            if was_rewritten:
+                yield f"event: rewritten\ndata: {json.dumps({'query': rewritten})}\n\n"
+            injection = bool(body.question) and detect_injection(body.question)
+            acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
+            hits = []
+            degraded = False
+            try:
+                hits = retrieve(
+                    auth.tenant_id, rewritten, top_k=body.top_k,
+                    candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
+                )
+            except RagError as exc:
+                log.warning("query_stream_degraded", extra={"tenant_id": auth.tenant_id, "error_type": type(exc).__name__})
+                degraded = True
+            hits = [h for h in hits if not detect_injection(h["text"])]
+            in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
+
+            sources = [{"chunk_id": h["chunk_id"], "title": h.get("title"),
+                        "snippet": h["text"][:280]} for h in hits[:body.top_k]]
+            yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
+
+            answer = None
+            if body.generate:
+                if injection:
+                    answer = "I can't follow those instructions. Ask me a question about the documented content and I'll help."
+                elif not in_scope:
+                    answer = "I don't have information on that in the available documents. Let me connect you with support, or try rephrasing your question."
+                else:
+                    collected: list[str] = []
+                    for tok in stream_answer(rewritten, hits):
+                        collected.append(tok)
+                        yield f"event: token\ndata: {json.dumps(tok)}\n\n"
+                    answer = "".join(collected)
+
+            if body.session_id:
+                store = get_session_store()
+                store.append(body.session_id, "user", body.question)
+                store.append(body.session_id, "assistant", answer or (hits[0]["text"] if hits else ""))
+
+            done = {"tenant_id": auth.tenant_id, "out_of_scope": (not in_scope),
+                    "injection_detected": injection, "degraded": degraded}
+            yield f"event: done\ndata: {json.dumps(done)}\n\n"
+        except Exception as exc:
+            err = {"error": getattr(exc, "public_detail", type(exc).__name__)}
+            yield f"event: error\ndata: {json.dumps(err)}\n\n"
+
+    return StreamingResponse(_sse(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    new_key = generate_api_key()
+    await tenants.add_api_key(auth.tenant_id, new_key)
+    await audit_event(
+        "key.rotate", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": new_key[:8]},
+    )
+    return TenantOut(
+        tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
+        plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
+    )
+
+
+@v1.get("/{tenant}/keys", response_model=TenantKeysOut)
+async def list_keys(tenant: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    keys = [KeyInfo(**k) for k in await tenants.list_key_prefixes(auth.tenant_id)]
+    return TenantKeysOut(tenant_id=auth.tenant_id, keys=keys)
+
+
+@v1.delete("/{tenant}/keys/{prefix}", status_code=status.HTTP_200_OK)
+async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    n = await tenants.revoke_api_key(auth.tenant_id, prefix)
+    if n == 0:
+        return {"revoked": 0, "note": "no change (last valid key is protected)"}
+    await audit_event(
+        "key.revoke", actor=auth.tenant_id, target=auth.tenant_id,
+        meta={"prefix": prefix, "revoked": n},
+    )
+    return {"revoked": n}
+
+
+@v1.put("/{tenant}/eval/set", status_code=status.HTTP_200_OK)
+async def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: Request):
+    rate_limit(request, auth.tenant_id)
+    from .eval import save_golden_set
+    from .models import GoldenItem
+
+    items = [GoldenItem(**it.model_dump()) for it in body.items]
+    n = await save_golden_set(auth.tenant_id, items)
+    return {"saved": n}
+
+
+@v1.post("/{tenant}/eval/run", response_model=EvalReportOut)
+async def run_eval(tenant: str, auth: TenantDep, request: Request,
+             top_k: int = 8, candidate_k: int = 30, rerank: bool = True):
+    rate_limit(request, auth.tenant_id)
+    from .eval import evaluate, load_golden_set
+    from .models import EvalReportOut as _O
+
+    items = await load_golden_set(auth.tenant_id)
+    if not items:
+        raise HTTPException(status_code=400, detail="no golden set; PUT /eval/set first")
+    rep = evaluate(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k, rerank=rerank)
+    return _O(**rep.__dict__)
+
+
+@v1.post("/{tenant}/eval/quality", response_model=dict)
+async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
+                     top_k: int = 8, candidate_k: int = 30, rerank: bool = True,
+                     generate_answer: bool = True, persist: bool = True):
+    rate_limit(request, auth.tenant_id)
+    from .eval import evaluate_quality, load_golden_set, save_eval_run
+
+    items = await load_golden_set(auth.tenant_id)
+    if not items:
+        raise HTTPException(status_code=400, detail="no golden set; PUT /eval/set first")
+    rep = evaluate_quality(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k,
+                           rerank=rerank, generate_answer=generate_answer)
+    out = {**rep.__dict__}
+    if persist:
+        rid = await save_eval_run(auth.tenant_id, rep, run_kind="manual_quality")
+        out["run_id"] = rid
+    return out
+
+
+@v1.get("/{tenant}/eval/runs", response_model=list[dict])
+async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+    rate_limit(request, auth.tenant_id)
+    from .eval import load_eval_runs
+
+    return await load_eval_runs(auth.tenant_id, limit=limit)
+
+
+@v1.post("/{tenant}/eval/golden/auto", response_model=dict)
+async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request,
+                      n: int = 3):
+    rate_limit(request, auth.tenant_id)
+    from .eval import JudgeLLM, save_golden_set
+
+    title = body.get("title", "")
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    judge = JudgeLLM()
+    items = judge.generate_golden(title, text, n=n)
+    if body.get("save"):
+        await save_golden_set(auth.tenant_id, items)
+    return {"generated": [it.__dict__ for it in items], "judge_available": judge.available}
+
+
+app.mount("/api/v1", v1)
