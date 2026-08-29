@@ -79,6 +79,16 @@ from .rbac import (
 )
 from .resilience import RagError, circuit_status
 from .retrieval import retrieve
+from .analytics import (
+    GAP_INJECTION,
+    GAP_LOW_CONFIDENCE,
+    GAP_NO_CONTEXT,
+    estimate_tokens,
+    get_usage,
+    list_knowledge_gaps,
+    record_knowledge_gap,
+    record_query_usage,
+)
 from .validation import (
     validate_content,
     validate_content_type,
@@ -915,6 +925,19 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     log.info("query", extra={"tenant_id": auth.tenant_id, "hits": len(hits),
                              "generate": body.generate, "injection": injection,
                              "out_of_scope": (not in_scope), "rewritten": was_rewritten})
+    # PHASE E: analytics — knowledge-gap logging + query token metering (fail-open).
+    # Injection takes priority over scope: an injection-guarded turn is a distinct signal
+    # (abuse/off-topic) and must be logged as such even when retrieval also found nothing.
+    if injection:
+        await record_knowledge_gap(auth.tenant_id, body.question, GAP_INJECTION)
+    elif not in_scope:
+        reason = GAP_NO_CONTEXT if not hits else GAP_LOW_CONFIDENCE
+        await record_knowledge_gap(auth.tenant_id, body.question, reason)
+    if body.generate and answer:
+        # Generation tokens ~ answer length; retrieve-side tokens ~ context. Deterministic
+        # estimate keeps metering dependency-free (real LLM usage would refine this).
+        q_tokens = estimate_tokens(answer) + estimate_tokens(rewritten)
+        await record_query_usage(auth.tenant_id, q_tokens, generated=True)
     await _audit_data_plane(
         "tenant.query", auth.tenant_id,
         meta={"hits": len(hits), "generate": body.generate, "injection": injection,
@@ -996,6 +1019,20 @@ def query_stream(
                 store = get_session_store()
                 store.append(body.session_id, "user", body.question)
                 store.append(body.session_id, "assistant", answer or (hits[0]["text"] if hits else ""))
+
+            # PHASE E: analytics — fire-and-forget on the running loop (the SSE generator
+            # is a SYNC generator, so we schedule the async recording task rather than
+            # awaiting it here; a failure must never break the stream).
+            try:
+                import asyncio
+
+                _loop = asyncio.get_running_loop()
+                _loop.create_task(_record_stream_analytics(
+                    auth.tenant_id, body.question, rewritten, in_scope, injection,
+                    answer or "", bool(body.generate), bool(hits),
+                ))
+            except Exception:  # noqa: BLE001 — never break the SSE stream on analytics
+                pass
 
             done = {"tenant_id": auth.tenant_id, "out_of_scope": (not in_scope),
                     "injection_detected": injection, "degraded": degraded}
@@ -1267,6 +1304,53 @@ async def set_config(tenant: str, body: TenantConfigIn, auth: TenantDep, request
     await _audit_data_plane("tenant.config", auth.tenant_id,
                            meta={"system_prompt_set": body.system_prompt is not None})
     return {"ok": True}
+
+
+# ---------------- PHASE E: analytics ----------------
+
+async def _record_stream_analytics(
+    tenant_id: str, question: str, rewritten: str,
+    in_scope: bool, injection: bool, answer: str, generated: bool, has_hits: bool,
+) -> None:
+    """Async helper scheduled from the (sync) SSE generator to log gaps + meter tokens.
+
+    Best-effort: any failure is swallowed — analytics must never affect the stream.
+    """
+    try:
+        if injection:
+            await record_knowledge_gap(tenant_id, question, GAP_INJECTION)
+        elif not in_scope:
+            reason = GAP_NO_CONTEXT if not has_hits else GAP_LOW_CONFIDENCE
+            await record_knowledge_gap(tenant_id, question, reason)
+        if generated and answer:
+            q_tokens = estimate_tokens(answer) + estimate_tokens(rewritten)
+            await record_query_usage(tenant_id, q_tokens, generated=True)
+    except Exception:  # noqa: BLE001 — fail-open
+        pass
+
+
+@v1.get("/{tenant}/analytics", response_model=dict)
+async def get_analytics(tenant: str, auth: TenantDep, request: Request,
+                        _: None = Depends(require_secret_key)):
+    """PHASE E: per-tenant usage + knowledge-gap summary (secret-key only)."""
+    rate_limit(request, auth.tenant_id)
+    usage = await get_usage(auth.tenant_id)
+    gaps = await list_knowledge_gaps(auth.tenant_id, limit=50)
+    return {
+        "tenant_id": auth.tenant_id,
+        "usage": usage,
+        "knowledge_gaps": gaps,
+        "knowledge_gap_count": len(gaps),
+    }
+
+
+@v1.get("/{tenant}/knowledge-gaps", response_model=list[dict])
+async def list_gaps(tenant: str, auth: TenantDep, request: Request,
+                    _: None = Depends(require_secret_key),
+                    reason: str | None = None, limit: int = 200):
+    """PHASE E.1: list logged unanswered/out-of-scope questions for this tenant."""
+    rate_limit(request, auth.tenant_id)
+    return await list_knowledge_gaps(auth.tenant_id, reason=reason, limit=limit)
 
 
 # Mount the versioned API

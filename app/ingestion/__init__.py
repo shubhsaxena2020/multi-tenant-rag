@@ -137,6 +137,15 @@ async def ingest_core(
         base_metadata=base, content_type=content_type,
     )
     await tenants.increment_chunk_count(tenant_id, len(chunk_ids))
+    # PHASE E.2: meter ingestion tokens (embedding input) — deterministic estimate so
+    # metering works without an external embedder; fail-open (import broad except).
+    try:
+        from ..analytics import record_ingest_usage, estimate_tokens
+
+        ingest_tokens = sum(estimate_tokens(t) for t in texts)
+        await record_ingest_usage(tenant_id, len(chunk_ids), ingest_tokens)
+    except Exception:  # noqa: BLE001 — metering must never fail ingestion
+        pass
     await _record_catalog(
         tenant_id, doc_id, title, content_type, len(chunk_ids),
         source_url, source_hash, acl,

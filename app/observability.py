@@ -80,6 +80,22 @@ AUDIT_FAILURES = Counter(
 )
 
 
+# ---------------- PHASE E: analytics (knowledge gaps + token metering) ----------------
+# Bounded labels only (no tenant_id — cardinality / privacy). reason is the bounded
+# GAP_* set. These counters make the analytics signal observable to Prometheus/Alertmanager
+# the same way the rest of the service's counters are, with fail-open writes.
+ANALYTICS_GAPS = Counter(
+    "rag_analytics_knowledge_gaps_total", "Knowledge-gap questions logged (out-of-scope)",
+    ["reason"],
+)
+ANALYTICS_INGEST_TOKENS = Counter(
+    "rag_analytics_ingest_tokens_total", "Estimated tokens consumed by ingestion (embedding)"
+)
+ANALYTICS_QUERY_TOKENS = Counter(
+    "rag_analytics_query_tokens_total", "Estimated tokens consumed by queries/generation"
+)
+
+
 def record_slo(method: str, path: str, status: int, latency: float) -> None:
     """Update SLO counters/histograms for one completed request (v9-5)."""
     ok = 200 <= status < 500
