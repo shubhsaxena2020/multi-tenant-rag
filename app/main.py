@@ -101,6 +101,7 @@ from .observability import (
 from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
 from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .leads import get_lead_summary, list_leads, save_lead
+from .knowledge_gaps import list_knowledge_gaps, record_knowledge_gap, record_knowledge_gap_bg, count_knowledge_gaps
 from .analytics import get_analytics_csv_rows, get_tenant_analytics
 from .ratelimit import rate_limit
 from .rbac import (
@@ -630,6 +631,34 @@ async def admin_leads(tenant: str, _: None = Depends(require_admin), limit: int 
         return Response(content=csv_text, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=leads_{tenant}.csv"})
     return {"summary": summary, "entries": entries}
+
+
+# ---------------- Admin: per-tenant knowledge-gap reporting (PHASE E #13) ----------------
+@app.get("/admin/knowledge-gaps/{tenant}", response_model=dict)
+async def admin_knowledge_gaps(tenant: str, _: None = Depends(require_admin), limit: int = 100, fmt: str = "json"):
+    """Operator-only unanswered-question / knowledge-gap report for a tenant (issue #13):
+    recent out-of-scope questions, most-recent first. `fmt=csv` exports the gaps. 404 on unknown tenant."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    count = await count_knowledge_gaps(tenant)
+    entries = await list_knowledge_gaps(tenant, limit=limit)
+    if fmt == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["id", "session_id", "question", "ts"])
+        for e in entries:
+            w.writerow([e["id"], e.get("session_id") or "", (e.get("question") or "").replace("\n", " "),
+                        e["ts"]])
+        csv_text = buf.getvalue()
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=knowledge_gaps_{tenant}.csv"})
+    return {"count": count, "entries": entries}
 
 
 # ---------------- Admin: unified per-tenant analytics (PHASE E #37) ----------------
@@ -1210,6 +1239,14 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     # (9c) Confidence gating / abstention (Self-RAG style).
     in_scope, _reason = assess_confidence(hits, s.retrieval_confidence_threshold)
 
+    # PHASE E (#13): an out-of-scope query (low retrieval confidence, NOT an injection block)
+    # is a knowledge gap — log it so operators can mine missing content. Injection is a security
+    # signal and is intentionally NOT recorded as a gap.
+    if not in_scope and not injection:
+        await record_knowledge_gap(
+            auth.tenant_id, question=body.question, session_id=body.session_id
+        )
+
     results = [
         RetrievedChunk(
             chunk_id=h["chunk_id"], doc_id=h["doc_id"], title=h["title"],
@@ -1311,6 +1348,9 @@ def query_stream(
             in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
             # PHASE D (#27): one billable query. PHASE E: persist out_of_scope in meta for analytics.
             record_usage_bg(auth.tenant_id, "query", meta={"out_of_scope": bool(not in_scope)})
+            # PHASE E (#13): out-of-scope (not injection-blocked) query -> knowledge gap.
+            if not in_scope and not injection:
+                record_knowledge_gap_bg(auth.tenant_id, question=body.question, session_id=body.session_id)
 
             # Include source_url so the widget can render clickable citations (PHASE C #6).
             # doc_id + chunk_id let the widget deep-link to the hosted viewer when no external
