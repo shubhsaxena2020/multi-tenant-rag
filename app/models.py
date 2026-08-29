@@ -82,6 +82,7 @@ class DocumentOut(BaseModel):
     doc_id: str
     title: str
     chunk_count: int
+    quarantined_chunks: int = 0  # ingest-time injection drops (poisoned chunks never indexed)
     content_type: str
     metadata: dict[str, Any]
 
