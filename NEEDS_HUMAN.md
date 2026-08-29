@@ -40,5 +40,5 @@ now work. Evidence this session:
 - Issue #2: additive-column migration guard → merged (PR #3).
 - Issue #14 (PHASE C widget+SDK polish): widget served (/widget.js,/widget.html,/demo), widget.js
   auth bug fixed, clickable citations + safe markdown + multi-turn added, hosted demo page added,
-  SDK expanded (upload_file/ingest_sitemap/list_documents) + JS SDK skeleton. PR opened
-  (Fixes #14); only the npm *publish* step remains (external blocker above).
+  SDK expanded (upload_file/ingest_sitemap/list_documents) + JS SDK skeleton. Merged PR #17,
+  tagged v10.18-phase-c-widget-sdk. Only the npm *publish* step remains (external blocker above).
