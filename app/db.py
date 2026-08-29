@@ -46,6 +46,9 @@ class Tenant(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     allowed_groups: Mapped[str] = mapped_column(Text, default='["*"]', nullable=False)
+    # Per-tenant widget branding (issue #23): JSON blob {logo_url, header_title, accent, ...}.
+    # Nullable text, default '{}'. Applied by the embeddable widget via CSS custom properties.
+    branding: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
 
 
 class TenantKey(Base):
@@ -183,6 +186,7 @@ async def init_db() -> None:
             ("tenant_keys", "kind", "VARCHAR(16)"),
             ("tenant_keys", "expires_at", "TIMESTAMP WITH TIME ZONE"),
             ("tenants", "chunk_quota", "INTEGER"),
+            ("tenants", "branding", "TEXT"),
         ]
         await _run_add_column_migrations(conn, migrations)
 
@@ -232,12 +236,23 @@ def _key_hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def _parse_json(value: str | None, default: Any) -> Any:
+    """Parse a JSON text column, falling back to `default` on missing/corrupt data."""
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
+
+
 async def create_tenant(
     name: str,
     tenant_id: str,
     api_key: str,
     plan: str,
     allowed_groups: list[str] | None = None,
+    branding: dict | None = None,
     session: AsyncSession | None = None,
 ) -> dict:
     """Create a new tenant with initial API key. Returns tenant dict."""
@@ -252,6 +267,7 @@ async def create_tenant(
             created_at=now,
             chunk_count=0,
             allowed_groups=json.dumps(groups),
+            branding=json.dumps(branding or {}),
         )
         s.add(tenant)
         key = TenantKey(
@@ -272,6 +288,7 @@ async def create_tenant(
             "created_at": tenant.created_at,
             "chunk_count": tenant.chunk_count,
             "allowed_groups": groups,
+            "branding": _parse_json(tenant.branding, {}),
         }
 
 
@@ -423,6 +440,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "created_at": t.created_at,
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
+                "branding": _parse_json(t.branding, {}),
             }
     else:
         async with session as s:
@@ -443,6 +461,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "created_at": t.created_at,
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
+                "branding": _parse_json(t.branding, {}),
             }
 
 
@@ -493,6 +512,19 @@ async def decrement_chunk_count(tenant_id: str, n: int, session: AsyncSession | 
         )
         await s.execute(stmt)
         await s.commit()
+
+
+async def set_tenant_branding(tenant_id: str, branding: dict, session: AsyncSession | None = None) -> bool:
+    """Persist a tenant's sanitized branding JSON blob. Returns True if the tenant exists."""
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(branding=json.dumps(branding or {}))
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return (result.rowcount or 0) > 0
 
 
 # ---- Document registry (GitHub issue #4: idempotent + replace-on-change re-ingestion) ----

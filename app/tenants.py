@@ -22,6 +22,9 @@ from .db import (
     create_tenant as _create_tenant,
 )
 from .db import (
+    set_tenant_branding as _set_tenant_branding,
+)
+from .db import (
     delete_tenant as _delete_tenant,
 )
 from .db import (
@@ -54,8 +57,9 @@ async def create_tenant(
     api_key: str,
     plan: str,
     allowed_groups: list[str] | None = None,
+    branding: dict | None = None,
 ) -> TenantRow:
-    data = await _create_tenant(name, tenant_id, api_key, plan, allowed_groups)
+    data = await _create_tenant(name, tenant_id, api_key, plan, allowed_groups, branding=branding)
     return TenantRow(**data)
 
 
@@ -121,3 +125,8 @@ def chunk_count(tenant_id: str) -> int:
 
 async def delete_tenant(tenant_id: str) -> bool:
     return await _delete_tenant(tenant_id)
+
+
+async def set_tenant_branding(tenant_id: str, branding: dict) -> bool:
+    """Persist a tenant's sanitized branding blob (issue #23). Returns True if tenant exists."""
+    return await _set_tenant_branding(tenant_id, branding)

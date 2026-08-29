@@ -23,6 +23,14 @@ class TenantCreate(BaseModel):
             "for single-user tenants. Operator/admin-set only."
         ),
     )
+    branding: dict | None = Field(
+        default=None,
+        description=(
+            "Per-tenant widget branding (issue #23): {logo_url, header_title, accent, "
+            "accent_text, font_family}. Applied by the embeddable widget via CSS custom "
+            "properties. Server-side validated/sanitized before use."
+        ),
+    )
 
 
 class TenantOut(BaseModel):
@@ -33,10 +41,75 @@ class TenantOut(BaseModel):
     created_at: datetime
     chunk_count: int = 0
     allowed_groups: list[str] = ["*"]
+    branding: dict = {}
+
+
+class TenantBranding(BaseModel):
+    """Per-tenant widget branding (issue #23). All fields optional; validated/sanitized
+    server-side before being returned to the widget."""
+    logo_url: str | None = Field(default=None, description="http(s) URL to a logo image.")
+    header_title: str | None = Field(default=None, max_length=120, description="Header text.")
+    accent: str | None = Field(
+        default=None,
+        description="Primary accent color as a safe CSS color (#rgb(a) or rgb()/hsl()).",
+    )
+    accent_text: str | None = Field(
+        default=None, description="Text/icon color on the accent background (safe CSS color)."
+    )
+    font_family: str | None = Field(
+        default=None, max_length=120, description="CSS font-family stack (letters, spaces, commas, dashes only)."
+    )
+
+
+class WidgetConfigOut(BaseModel):
+    """Branding payload the embeddable widget fetches to self-theme (issue #23)."""
+    tenant_id: str
+    branding: dict
 
 
 # Alias for backward compatibility with db layer
 TenantRow = TenantOut
+
+
+def sanitize_branding(raw: dict | None) -> dict:
+    """Validate and whitelist tenant branding fields (issue #23).
+
+    Server-side mirror of the widget's applyBranding guards. Rejects anything that could
+    enable CSS/HTML injection: accent/accent_text must be a safe CSS color, logo_url must be
+    an http(s) URL, font_family only allows letters/spaces/commas/dashes, header_title is a
+    short string. Unknown keys are dropped. Returns a clean dict safe to ship to the widget.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    out: dict = {}
+    # Colors
+    import re
+
+    color_re = re.compile(r"^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d{1,3}%?\s*,\s*\d{1,3}%?\s*,\s*\d{1,3}%?\s*\)|hsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\))$")
+    for key in ("accent", "accent_text"):
+        v = raw.get(key)
+        if isinstance(v, str) and color_re.match(v.strip()):
+            out[key] = v.strip()
+    # Logo URL — http(s) only
+    logo = raw.get("logo_url")
+    if isinstance(logo, str):
+        try:
+            from urllib.parse import urlparse
+
+            p = urlparse(logo)
+            if p.scheme in ("http", "https") and p.netloc:
+                out["logo_url"] = logo
+        except Exception:
+            pass
+    # Header title — plain text only (no HTML). Reject anything with markup characters.
+    title = raw.get("header_title")
+    if isinstance(title, str) and 0 < len(title) <= 120 and not re.search(r"[<>]", title):
+        out["header_title"] = title
+    # Font family — letters, spaces, commas, dashes, quotes only
+    font = raw.get("font_family")
+    if isinstance(font, str) and re.match(r"^[A-Za-z0-9 ,'\-\"]{1,120}$", font):
+        out["font_family"] = font
+    return out
 
 
 class KeyInfo(BaseModel):

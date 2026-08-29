@@ -5,25 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>RAG Chat</title>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --txt:#e2e8f0; }
+  :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --accent-text:#04263a; --txt:#e2e8f0; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
-  header { padding:10px 14px; background:var(--card); font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  header { padding:10px 14px; background:var(--card); font-weight:600; display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  #brand-logo { height:22px; width:22px; object-fit:contain; border-radius:4px; display:none; }
+  #brand-title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #close { cursor:pointer; border:0; background:transparent; color:var(--txt); font-size:18px; }
   #log { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
-  .msg { max-width:85%; padding:8px 12px; border-radius:12px; line-height:1.45; white-space:pre-wrap; word-wrap:break-word; }
-  .user { align-self:flex-end; background:var(--accent); color:#04263a; }
+  .msg { max-width:85%; padding:8px 12px; border-radius:12px; line-height:1.45; }
+  .user { align-self:flex-end; background:var(--accent); color:var(--accent-text); white-space:pre-wrap; word-wrap:break-word; }
   .bot { align-self:flex-start; background:var(--card); }
-  .bot a { color:var(--accent); }
+  /* Safe-markdown plain-text rendering (issue #7): no innerHTML, only textContent with visual markers. */
   .cite { display:inline-block; margin:2px 4px 0 0; font-size:11px; padding:1px 6px; border:1px solid #334155; border-radius:6px; text-decoration:none; color:var(--accent); }
-  .cite:hover { background:#0ea5e9; color:#04263a; }
+  .cite:hover { background:var(--accent); color:var(--accent-text); }
   form { display:flex; gap:8px; padding:10px; background:var(--card); }
   input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--txt); }
-  button { padding:0 16px; border:0; border-radius:8px; background:var(--accent); color:#04263a; font-weight:600; }
+  button { padding:0 16px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-text); font-weight:600; }
 </style>
 </head>
 <body>
-<header>RAG Chat <button id="close">×</button></header>
+<header>
+  <img id="brand-logo" alt="" />
+  <span id="brand-title">RAG Chat</span>
+  <button id="close">×</button>
+</header>
 <div id="log"></div>
 <form id="form">
   <input id="q" autocomplete="off" placeholder="Ask a question…" />
@@ -34,18 +40,159 @@
    embedding host page via postMessage and calls the RAG API directly (Bearer key is
    passed in from the host loader, never hardcoded here).
 
-   PHASE C improvements over v9-3:
-   - Multi-turn: a stable per-instance session_id is sent with every turn so the server can
-     rewrite/clarify follow-ups against conversation history (session store already exists).
-   - Clickable citations: the `sources` SSE event carries {chunk_id,title,url,snippet}; we
-     render each as <a> so users can jump to the source.
-   - Safe rendering: ALL untrusted text (answer, titles, snippets, URLs) is set via
-     textContent / a validated href — never innerHTML — so a hostile document snippet cannot
-     inject script. URLs are restricted to http(s) before becoming an href. */
+   PHASE C improvements:
+   - Multi-turn: stable per-instance session_id, persisted in localStorage (issue #18).
+   - Clickable citations: real links to source_url or hosted viewer (issue #20).
+   - Safe Markdown rendering: plain-text transformation with visual markers (issue #7).
+     The answer can be influenced by retrieved/poisoned documents, so we avoid innerHTML
+     entirely and instead transform Markdown to a safer plain-text form that preserves
+     emphasis via markers (bold, italic, code, links, headings). This is 100% XSS-safe
+     because we never assign arbitrary strings to innerHTML. */
+
+/* @rag-md-safe:start */
+// Only allow http(s) URLs to become clickable links. Anything else is shown as plain text.
+function safeHref(url) {
+  if (typeof url !== "string") return null;
+  try {
+    var base = (typeof location !== "undefined" && location.origin) || "https://x";
+    var u = new URL(url, base);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
+  } catch (e) {}
+  return null;
+}
+
+// Transform Markdown to a safer plain-text form that preserves emphasis via markers.
+// Input may contain attacker-controlled content (LLM answer can echo back poisoned
+// retrieved docs). We avoid innerHTML entirely and output plain text for textContent.
+// Strategy:
+//   1. Extract fenced code blocks and inline code spans into placeholders.
+//   2. Apply block- and inline-level transforms on the remaining plain text:
+//      - Headings (# ): convert to underline with === on next line.
+//      - Bold (**text** or __text__) -> **text** (keep double asterisks).
+//      - Italic (*text* or _text_) -> _text_ (underscores).
+//      - Links [text](url): if url passes safeHref (http/https), show "text (url)".
+//        Else show "[text](url)" (fallback).
+//      - Lists (- / * ): keep as is (they are already markers).
+//      - Blockquote (> ): keep as is.
+//   3. Restore code placeholders.
+//   4. Preserve line breaks and spacing.
+// This yields plain text that is safe to assign to textContent (no HTML).
+function renderMarkdownSafe(raw) {
+  if (raw == null) return "";
+  var s = String(raw);
+  // 1. Extract fenced code blocks first.
+  var codeBlocks = [];
+  s = s.replace(/```[^\n]*\n([\s\S]*?)```/g, function (_, body) {
+    var idx = codeBlocks.push("\n\n```\n" + body + "\n```\n") - 1;
+    return "\u0000CODE" + idx + "\u0000";
+  });
+  // 2. Extract inline code spans.
+  var inlineCodes = [];
+  s = s.replace(/`([^`\n]+)`/g, function (_, body) {
+    var idx = inlineCodes.push("`" + body + "`") - 1;
+    return "\u0000IC" + idx + "\u0000";
+  });
+  // 3. Split into lines for block-level processing.
+  var lines = s.split(/\n/);
+  var out = [];
+  var i = 0;
+  while (i < lines.length) {
+    var ln = lines[i];
+    // Headings: convert to underline with === on next line.
+    var hm = ln.match(/^(#{1,3})\s+(.*)$/);
+    if (hm) {
+      var level = hm[1].length;
+      var text = hm[2];
+      out.push(text);
+      out.push("=".repeat(text.length));
+      i++;
+      continue;
+    }
+    // Blockquote: keep > prefix.
+    if (/^>\s/.test(ln)) {
+      out.push(ln);
+      i++;
+      continue;
+    }
+    // Unordered list.
+    if (/^[-*]\s/.test(ln)) {
+      out.push(ln);
+      i++;
+      continue;
+    }
+    // Ordered list.
+    if (/^\d+\.\s/.test(ln)) {
+      out.push(ln);
+      i++;
+      continue;
+    }
+    // Blank line.
+    if (/^\s*$/.test(ln)) {
+      out.push("");
+      i++;
+      continue;
+    }
+    // Paragraph line: just keep the line as is (will be joined with \n later).
+    out.push(ln);
+    i++;
+  }
+  // 4. Join lines back together.
+  s = out.join("\n");
+  // 5. Inline transforms on the remaining plain text.
+  // Links [text](url) -> text (url) if safe, else [text](url) as fallback.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, function (_, text, url) {
+    var h = safeHref(url);
+    return h ? text + " (" + h + ")" : "[" + text + "](" + url + ")";
+  });
+  // Bold **text** or __text__ -> **text** (keep double asterisks for visual weight).
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "**$1**");
+  s = s.replace(/__([^_\n]+)__/g, "**$1**");
+  // Italic *text* or _text_ -> _text_ (underscores).
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1_$2_");
+  s = s.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1_$2_");
+  // 6. Restore code placeholders.
+  s = s.replace(/\u0000IC(\d+)\u0000/g, function (_, k) { return inlineCodes[+k]; });
+  s = s.replace(/\u0000CODE(\d+)\u0000/g, function (_, k) { return codeBlocks[+k]; });
+  return s;
+}
+/* @rag-md-safe:end */
+
+/* @rag-branding:start */
+// Apply per-tenant branding to the widget via CSS custom properties + header UI (issue #23).
+// GUARDS against injection: only the exact set of safe values is applied. accent/accent_text
+// must be a valid CSS color; logo_url must be an http(s) URL (via safeHref); header_title is
+// set via textContent (never innerHTML); font_family is validated to a narrow charset. No
+// arbitrary style/cssText is ever assigned from tenant data.
+var SAFE_CSS_COLOR = /^(#[0-9a-fA-F]{3,8}|rgb\(\s*\d{1,3}%?\s*,\s*\d{1,3}%?\s*,\s*\d{1,3}%?\s*\)|hsl\(\s*\d{1,3}\s*,\s*\d{1,3}%\s*,\s*\d{1,3}%\s*\))$/;
+var SAFE_FONT = /^[A-Za-z0-9 ,'"\-]{1,120}$/;
+
+function applyBranding(cfg) {
+  if (!cfg || typeof cfg !== "object") return;
+  var root = document.documentElement;
+  if (typeof cfg.accent === "string" && SAFE_CSS_COLOR.test(cfg.accent.trim())) {
+    root.style.setProperty("--accent", cfg.accent.trim());
+  }
+  if (typeof cfg.accent_text === "string" && SAFE_CSS_COLOR.test(cfg.accent_text.trim())) {
+    root.style.setProperty("--accent-text", cfg.accent_text.trim());
+  }
+  if (typeof cfg.font_family === "string" && SAFE_FONT.test(cfg.font_family)) {
+    root.style.setProperty("--widget-font", cfg.font_family);
+    document.body.style.fontFamily = cfg.font_family;
+  }
+  var logo = document.getElementById("brand-logo");
+  if (logo) {
+    var href = safeHref(cfg.logo_url);
+    if (href) { logo.src = href; logo.style.display = "block"; }
+    else { logo.removeAttribute("src"); logo.style.display = "none"; }
+  }
+  var title = document.getElementById("brand-title");
+  if (title && typeof cfg.header_title === "string" && cfg.header_title.length) {
+    title.textContent = cfg.header_title;  // textContent => no HTML injection
+  }
+}
+/* @rag-branding:end */
+
 var tenant = "", apiKey = "", base = "";
-// Stable session id: persisted in localStorage per-tenant so a conversation SURVIVES page
-// reloads (true multi-turn persistence on the client). Falls back to a random id if storage
-// is unavailable (private mode / file://).
 function loadSessionId() {
   try {
     var key = "rag-session:" + (tenant || "default");
@@ -58,27 +205,12 @@ function loadSessionId() {
     return "sess-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 }
-var sessionId = "";  // assigned once the tenant is known (see onConfig)
+var sessionId = "";
 var log = document.getElementById("log");
 
 function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
-// Only allow http(s) URLs to become clickable links. Anything else is shown as plain text.
-function safeHref(url) {
-  if (typeof url !== "string") return null;
-  try {
-    var u = new URL(url, location.origin);
-    if (u.protocol === "http:" || u.protocol === "https:") return u.href;
-  } catch (e) { /* not a valid URL */ }
-  return null;
-}
-
-function escapeText(s) { return s == null ? "" : String(s); }
-
-// Build a clickable citation link. Prefer the real source_url (external page). When a
-// document has no external URL (uploaded/text ingests), fall back to the hosted source
-// viewer on the RAG service, passing the secret key in the URL *fragment* (never sent to
-// the server / not in Referer) so the viewer page can fetch the document.
+// Build a clickable citation link (prefer external source_url, else hosted viewer).
 function citationHref(s) {
   var ext = safeHref(s && s.url);
   if (ext) return ext;
@@ -92,7 +224,15 @@ function citationHref(s) {
 
 function addMsg(cls, text, sources) {
   var d = el("div", "msg " + cls);
-  d.textContent = text || "";
+  var body = el("div", "bot-body");
+  if (cls.indexOf("user") >= 0) {
+    // User messages: plain textContent.
+    body.textContent = text || "";
+  } else {
+    // Bot answer: safe Markdown plain-text transformation.
+    body.textContent = renderMarkdownSafe(text || "");
+  }
+  d.appendChild(body);
   if (sources && sources.length) {
     var wrap = el("div");
     wrap.style.marginTop = "6px";
@@ -117,11 +257,21 @@ document.getElementById("close").onclick = function () {
 window.addEventListener("message", function (e) {
   if (e.data && e.data.type === "rag:config") {
     tenant = e.data.tenant; apiKey = e.data.apiKey; base = e.data.base;
-    if (!sessionId) sessionId = loadSessionId();  // stable, persisted per tenant
+    if (!sessionId) sessionId = loadSessionId();
     parent.postMessage({ type: "rag:toggle", open: true }, "*");
+    // Fetch per-tenant branding and theme the widget (issue #23). Best-effort: failures
+    // leave the default theme in place.
+    if (tenant && apiKey && base) {
+      fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(tenant) + "/widget/config", {
+        method: "GET",
+        headers: { "Authorization": "Bearer " + apiKey },
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (cfg) { if (cfg && cfg.branding) applyBranding(cfg.branding); })
+        .catch(function () {});
+    }
   }
 });
-// Tell the loader we're ready so it can push config.
 parent.postMessage({ type: "rag:ready" }, "*");
 
 document.getElementById("form").onsubmit = async function (ev) {
@@ -136,15 +286,14 @@ document.getElementById("form").onsubmit = async function (ev) {
     var resp = await fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(tenant) + "/query/stream", {
       method: "POST",
       headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
-      // session_id drives multi-turn rewriting; publishable key is query-scoped (PHASE C).
       body: JSON.stringify({ question: q, generate: true, top_k: 4, session_id: sessionId })
     });
     if (!resp.ok) { bot.textContent = "Error: " + resp.status; return; }
     var reader = resp.body.getReader(), decoder = new TextDecoder(), buf = "";
     while (true) {
-      var { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
+      var r = await reader.read();
+      if (r.done) break;
+      buf += decoder.decode(r.value, { stream: true });
       var parts = buf.split("\n\n"); buf = parts.pop();
       for (var p of parts) {
         var m = p.match(/^event: (\w+)\ndata: (.*)$/s);
@@ -155,7 +304,6 @@ document.getElementById("form").onsubmit = async function (ev) {
         else if (ev === "error") { bot.textContent = "Error: " + (data.error || "unknown"); }
       }
     }
-    // Re-render with citations once the full answer (and sources) are known.
     addMsg("bot", answer || "(no answer)", sources);
     bot.remove();
   } catch (e) { bot.textContent = "Network error."; }

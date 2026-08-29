@@ -78,11 +78,14 @@ from .models import (
     SecretKeyRequest,
     SitemapIngestIn,
     SitemapJobOut,
+    TenantBranding,
     TenantCreate,
     TenantKeysOut,
     TenantOut,
+    WidgetConfigOut,
     UploadOut,
 )
+from .models import sanitize_branding
 from .observability import (
     INGEST_CHUNKS,
     INGEST_JOBS,
@@ -537,7 +540,10 @@ async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(
     admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
     tenant_id = f"t_{uuid.uuid4().hex[:12]}"
     api_key = generate_api_key()
-    row = await tenants.create_tenant(body.name, tenant_id, api_key, body.plan, body.allowed_groups)
+    branding = sanitize_branding(body.branding) if body.branding else None
+    row = await tenants.create_tenant(
+        body.name, tenant_id, api_key, body.plan, body.allowed_groups, branding=branding
+    )
     try:
         ensure_collection(get_client())
     except Exception as exc:
@@ -550,7 +556,7 @@ async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(
     return TenantOut(
         tenant_id=row.tenant_id, name=row.name, api_key=api_key,
         plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
-        allowed_groups=row.allowed_groups,
+        allowed_groups=row.allowed_groups, branding=row.branding or {},
     )
 
 
@@ -766,6 +772,36 @@ async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request
     await delete_registry_by_doc_id(auth.tenant_id, doc_id)
     await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
     return {"deleted": doc_id}
+
+
+# ---------------- Widget branding (issue #23) ----------------
+@v1.get("/{tenant}/widget/config", response_model=WidgetConfigOut, status_code=status.HTTP_200_OK)
+async def widget_config(tenant: str, auth: TenantDep):
+    """Return the tenant's branding so the embeddable widget can self-theme.
+
+    Uses TenantDep (any key tier) so the widget's loader — which only holds the tenant's
+    secret key — can fetch it. Branding is non-sensitive display configuration.
+    """
+    if auth.tenant_id != tenant:
+        raise HTTPException(status_code=403, detail="tenant mismatch")
+    return WidgetConfigOut(tenant_id=auth.tenant_id, branding=auth.branding or {})
+
+
+@v1.patch("/{tenant}/branding", response_model=TenantOut, status_code=status.HTTP_200_OK)
+async def update_branding(tenant: str, body: TenantBranding, request: Request, _: None = Depends(require_admin)):
+    """Set/update a tenant's widget branding (admin only). Sanitized server-side."""
+    clean = sanitize_branding(body.model_dump(exclude_unset=True))
+    success = await tenants.set_tenant_branding(tenant, clean)
+    if not success:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    row = await tenants.get_tenant(tenant)
+    if row is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return TenantOut(
+        tenant_id=row.tenant_id, name=row.name, api_key=f"{row.api_key}...",
+        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
+        allowed_groups=row.allowed_groups, branding=row.branding or {},
+    )
 
 
 # ---------------- Sitemap onboarding (issue #7) ----------------
