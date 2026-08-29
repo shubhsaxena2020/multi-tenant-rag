@@ -123,6 +123,47 @@ class DocumentOut(BaseModel):
     )
 
 
+# ---------- Sitemap onboarding (issue #7) ----------
+class DocumentCatalogOut(BaseModel):
+    """Catalog row: what a tenant has indexed (issue #7). Backed by document_registry."""
+
+    doc_id: str
+    doc_key: str
+    title: str
+    content_type: str
+    chunk_count: int
+    source_url: str | None = None
+    content_hash: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SitemapIngestIn(BaseModel):
+    url: str = Field(..., min_length=1)
+    max_urls: int = Field(default=100, ge=1, le=2000)
+    concurrency: int = Field(default=4, ge=1, le=8)
+    title: str | None = None
+    content_type: str = "html"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = None
+
+
+class SitemapJobOut(BaseModel):
+    job_id: str
+    tenant_id: str
+    status: str
+    kind: str = "sitemap"
+    progress: float = 0.0
+    total_chunks: int = 0
+    done_chunks: int = 0
+    urls_discovered: int = 0
+    urls_ingested: int = 0
+    urls_failed: int = 0
+    skipped_robots: int = 0
+    error: str | None = None
+    title: str | None = None
+
+
 # ---------- Ingestion jobs ----------
 class IngestJobRequest(BaseModel):
     kind: str = Field(default="text", pattern="^(text|url|document)$")

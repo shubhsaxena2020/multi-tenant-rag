@@ -57,6 +57,7 @@ from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
 from .models import (
+    DocumentCatalogOut,
     DocumentCreate,
     DocumentOut,
     EvalReportOut,
@@ -72,6 +73,8 @@ from .models import (
     QueryResponse,
     RetrievedChunk,
     SecretKeyRequest,
+    SitemapIngestIn,
+    SitemapJobOut,
     TenantCreate,
     TenantKeysOut,
     TenantOut,
@@ -638,6 +641,112 @@ async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request
     delete_document(auth.tenant_id, doc_id)
     await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
     return {"deleted": doc_id}
+
+
+# ---------------- Sitemap onboarding (issue #7) ----------------
+@v1.post("/{tenant}/ingest/sitemap", response_model=SitemapJobOut, status_code=status.HTTP_202_ACCEPTED)
+async def create_sitemap_job(tenant: str, body: SitemapIngestIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """Onboard a client site by crawling its sitemap.xml. Returns a job_id to poll.
+
+    Respectful crawler: honors robots.txt (Allow/Disallow + Crawl-delay), caps
+    concurrency and total URLs, and reuses the SSRF-safe fetcher. Re-crawls are
+    idempotent (each URL is upserted under a stable per-URL doc_key from issue #4), so
+    re-running a sitemap REPLACES changed pages instead of duplicating them.
+    """
+    rate_limit(request, auth.tenant_id)
+    from fastapi import HTTPException
+
+    from .ratelimit import _limiter
+
+    s = get_settings()
+    allowed, retry = _limiter.hit(f"ingest:{auth.tenant_id}", limit=s.rate_ingest_jobs_per_min, window_min=1)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="ingest job rate limit exceeded (per tenant, per minute)",
+            headers={"Retry-After": str(retry)},
+        )
+    job_title = body.title or f"sitemap:{body.url}"
+    job_id = await job_store.create_job(auth.tenant_id, "sitemap", job_title)
+    INGEST_JOBS.labels(status="pending").inc()
+    meta = validate_metadata(body.metadata)
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+
+    import asyncio
+
+    async def _run():
+        await job_store.update_job(job_id, status="running", progress=0.05)
+        try:
+            from .ingestion.sitemap import crawl_sitemap
+
+            res = await crawl_sitemap(
+                auth.tenant_id, body.url,
+                max_urls=body.max_urls, concurrency=body.concurrency,
+                acl=acl, metadata=meta,
+                on_progress=lambda done, total: asyncio.create_task(
+                    job_store.update_job(job_id, progress=0.1 + 0.9 * (done / total))
+                ),
+            )
+            await job_store.update_job(
+                job_id, status="completed", progress=1.0,
+                result_doc_id=None,
+                total_chunks=res.urls_ingested,
+                done_chunks=res.urls_ingested,
+            )
+            summary = (f"discovered={res.urls_discovered} ingested={res.urls_ingested} "
+                       f"failed={res.urls_failed} skipped_robots={res.skipped_robots}")
+            await job_store.update_job(
+                job_id,
+                error=(summary if (res.urls_failed or res.errors) else None),
+            )
+            INGEST_JOBS.labels(status="completed").inc()
+            log.info("sitemap_crawl_done",
+                     extra={"tenant_id": auth.tenant_id, "job_id": job_id,
+                            "ingested": res.urls_ingested, "failed": res.urls_failed})
+        except Exception as e:
+            safe_err = f"{type(e).__name__}: {str(e)[:200]}"
+            await job_store.update_job(job_id, status="failed", error=safe_err)
+            INGEST_JOBS.labels(status="failed").inc()
+            log.error("sitemap_crawl_failed",
+                      extra={"tenant_id": auth.tenant_id, "job_id": job_id, "error": safe_err})
+
+    asyncio.create_task(_run())
+    return SitemapJobOut(
+        job_id=job_id, tenant_id=auth.tenant_id, status="pending",
+        kind="sitemap", title=job_title,
+    )
+
+
+@v1.get("/{tenant}/ingest/sitemap/{job_id}", response_model=SitemapJobOut)
+async def get_sitemap_job(tenant: str, job_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    rate_limit(request, auth.tenant_id)
+    j = await job_store.get_job(job_id, auth.tenant_id)
+    if j is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    summary = j.get("error") or ""
+    urls_ingested = j.get("total_chunks") or 0
+    return SitemapJobOut(
+        job_id=job_id, tenant_id=auth.tenant_id, status=j["status"],
+        kind="sitemap", progress=j.get("progress", 0.0),
+        total_chunks=j.get("total_chunks", 0), done_chunks=j.get("done_chunks", 0),
+        urls_ingested=urls_ingested,
+        urls_failed=(1 if summary and "failed=" in summary and urls_ingested == 0 else 0),
+        error=(summary if "failed=" in summary and urls_ingested == 0 else None),
+        title=j.get("title"),
+    )
+
+
+@v1.get("/{tenant}/documents", response_model=list[DocumentCatalogOut])
+async def list_documents(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), limit: int = 200):
+    """Document catalog — a tenant sees exactly what is indexed for them (issue #7).
+
+    Tenant-scoped (backed by document_registry, filtered on tenant_id); never cross-tenant.
+    """
+    rate_limit(request, auth.tenant_id)
+    from .db import list_documents as _list_documents
+
+    docs = await _list_documents(auth.tenant_id, limit=limit)
+    return [DocumentCatalogOut(**d) for d in docs]
 
 
 # ---------------- Query ----------------

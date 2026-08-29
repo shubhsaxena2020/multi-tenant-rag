@@ -507,6 +507,38 @@ async def get_registry_entry(tenant_id: str, doc_key: str, session: AsyncSession
         }
 
 
+async def list_documents(
+    tenant_id: str, limit: int = 200, session: AsyncSession | None = None
+) -> list[dict]:
+    """Catalog: every document currently indexed for `tenant_id` (issue #7).
+
+    Backed by `document_registry` (issue #4), which is tenant-scoped by construction, so a
+    tenant only ever sees their own docs. Ordered most-recently-updated first.
+    """
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(DocumentRegistry)
+            .where(DocumentRegistry.tenant_id == tenant_id)
+            .order_by(DocumentRegistry.updated_at.desc())
+            .limit(limit)
+        )
+        rows = (await s.execute(stmt)).scalars().all()
+        return [
+            {
+                "doc_id": r.doc_id,
+                "doc_key": r.doc_key,
+                "title": r.title,
+                "content_type": r.content_type,
+                "chunk_count": r.chunk_count,
+                "source_url": r.source_url,
+                "content_hash": r.content_hash,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            }
+            for r in rows
+        ]
+
+
 async def upsert_registry_entry(
     tenant_id: str,
     doc_key: str,
