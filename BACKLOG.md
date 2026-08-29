@@ -68,6 +68,15 @@ next step so it isn't a dead note.
   documented allowed_groups default, retrieved-chunk injection filter, admin-key fail-closed.
 - [ ] **Tenant API key rotation UX**: currently operator-driven. Next: self-service rotation
   endpoint + key expiry.
+- [DONE] **Publishable / secret key tiers (P1 #9)**: tenants can now mint a read-only
+  **publishable key** (`pk_*`) via `POST /api/v1/{tenant}/keys/publishable` that is safe to
+  embed client-side (e.g. the widget). A publishable key resolves to the SAME tenant
+  (isolation path untouched) but is scope-locked to query endpoints; `require_secret_key()`
+  rejects it (403) from ingest/delete/rotate/revoke/admin/eval. The secret key (`rk_*`)
+  keeps full power. Key tier is stored on `tenant_keys.kind` (default "secret").
+  PROD MIGRATION: existing `tenant_keys` tables need `ALTER TABLE tenant_keys ADD COLUMN
+  kind VARCHAR(16) NOT NULL DEFAULT 'secret';` (idempotent — `kind` column added with
+  server_default). Covered by tests/test_security_fixes.py (test_publishable_key_*).
 - [x] **Audit log**: tamper-evident, SHA-256 hash-chained `audit_log` table (app/audit.py),
   admin-gated `GET /audit` (read) + `GET /audit/verify` (chain-integrity proof). Records
   tenant.create / tenant.delete / key.rotate / key.revoke with a server-derived admin
