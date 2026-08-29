@@ -58,9 +58,11 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
             ))
             progress_tasks.append(task)
 
+        from . import doc_key_for_url
         result = await ingest_url(
             tenant_id, payload["url"], payload.get("title"),
-            metadata, on_progress=on_progress, acl=payload.get("acl")
+            metadata, on_progress=on_progress, acl=payload.get("acl"),
+            doc_key=doc_key_for_url(payload["url"]),
         )
     else:
         def on_progress(done: int, total: int):
@@ -71,11 +73,14 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
             ))
             progress_tasks.append(task)
 
+        from . import doc_key_for_text
+        title = payload.get("title") or "untitled"
         text = payload.get("text") or payload.get("content") or ""
+        ct = payload.get("content_type", "text")
         result = await ingest_text(
-            tenant_id, payload.get("title", "untitled"), text,
-            payload.get("content_type", "text"), metadata,
-            on_progress=on_progress, acl=payload.get("acl")
+            tenant_id, title, text, ct, metadata,
+            on_progress=on_progress, acl=payload.get("acl"),
+            doc_key=doc_key_for_text(title, ct),
         )
 
     # Wait for all progress update tasks to complete before finishing

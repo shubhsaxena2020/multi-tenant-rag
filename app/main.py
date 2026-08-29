@@ -493,7 +493,9 @@ async def create_document(tenant: str, body: DocumentCreate, request: Request, a
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
-    res = await ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=acl)
+    from .ingestion import doc_key_for_text
+    res = await ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=acl,
+                            doc_key=doc_key_for_text(body.title, ct))
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     log.info("document_ingested", extra={"tenant_id": auth.tenant_id, "chunk_count": res["chunk_count"]})
@@ -505,6 +507,7 @@ async def create_document(tenant: str, body: DocumentCreate, request: Request, a
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+        content_hash=res.get("content_hash"), previous_doc_id=res.get("previous_doc_id"),
     )
 
 
@@ -524,6 +527,7 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type="html", metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+        content_hash=res.get("content_hash"), previous_doc_id=res.get("previous_doc_id"),
     )
 
 
@@ -534,7 +538,9 @@ async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, reque
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
-    res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl)
+    from .ingestion import doc_key_for_text
+    res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl,
+                            doc_key=doc_key_for_text(body.title, ct))
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     await _audit_data_plane(
@@ -545,6 +551,7 @@ async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, reque
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
+        content_hash=res.get("content_hash"), previous_doc_id=res.get("previous_doc_id"),
     )
 
 

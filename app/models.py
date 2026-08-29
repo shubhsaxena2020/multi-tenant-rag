@@ -111,6 +111,16 @@ class DocumentOut(BaseModel):
     quarantined_chunks: int = 0  # ingest-time injection drops (poisoned chunks never indexed)
     content_type: str
     metadata: dict[str, Any]
+    content_hash: str | None = Field(
+        default=None,
+        description="sha256 of the cleaned indexed content (GitHub issue #4). Two ingests of "
+        "identical content share a hash, enabling idempotent re-ingestion.",
+    )
+    previous_doc_id: str | None = Field(
+        default=None,
+        description="When this ingest replaced a prior version of the same source, the doc_id "
+        "that was superseded (and whose chunks were deleted). Absent on first ingest / identical re-ingest.",
+    )
 
 
 # ---------- Ingestion jobs ----------

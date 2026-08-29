@@ -84,6 +84,29 @@ class Job(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class DocumentRegistry(Base):
+    """Per-tenant logical-document registry (GitHub issue #4).
+
+    Maps a stable, tenant-scoped `doc_key` (derived from source URL or title+type) to the
+    current `doc_id` in Qdrant, plus the `content_hash` of what is indexed. Re-ingesting the
+    same source reuses (idempotent) or replaces (content changed) the prior chunks instead of
+    creating fresh duplicates. Created as a new table via `create_all`; no ALTER migration.
+    """
+
+    __tablename__ = "document_registry"
+
+    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    doc_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 _engine: AsyncEngine | None = None
 _session_maker: async_sessionmaker[AsyncSession] | None = None
 
@@ -437,6 +460,115 @@ async def increment_chunk_count(tenant_id: str, n: int, session: AsyncSession | 
 async def chunk_count(tenant_id: str, session: AsyncSession | None = None) -> int:
     t = await get_tenant(tenant_id, session)
     return t["chunk_count"] if t else 0
+
+
+async def decrement_chunk_count(tenant_id: str, n: int, session: AsyncSession | None = None) -> None:
+    """Decrease a tenant's chunk counter (e.g. when replacing a document's stale chunks).
+
+    Clamped at 0 so a counter can never go negative (defensive against double-deletes).
+    """
+
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(chunk_count=func.max(Tenant.chunk_count - n, 0))
+        )
+        await s.execute(stmt)
+        await s.commit()
+
+
+# ---- Document registry (GitHub issue #4: idempotent + replace-on-change re-ingestion) ----
+
+
+async def get_registry_entry(tenant_id: str, doc_key: str, session: AsyncSession | None = None) -> dict | None:
+    """Return the current registry row for a (tenant, doc_key) or None if unknown."""
+
+    async with (session or get_session_maker())() as s:
+        stmt = select(DocumentRegistry).where(
+            DocumentRegistry.tenant_id == tenant_id,
+            DocumentRegistry.doc_key == doc_key,
+        )
+        result = await s.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return {
+            "tenant_id": row.tenant_id,
+            "doc_key": row.doc_key,
+            "doc_id": row.doc_id,
+            "title": row.title,
+            "content_type": row.content_type,
+            "source_url": row.source_url,
+            "content_hash": row.content_hash,
+            "chunk_count": row.chunk_count,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+        }
+
+
+async def upsert_registry_entry(
+    tenant_id: str,
+    doc_key: str,
+    doc_id: str,
+    *,
+    title: str,
+    content_type: str,
+    source_url: str | None,
+    content_hash: str,
+    chunk_count: int,
+    session: AsyncSession | None = None,
+) -> None:
+    """Insert or update the registry row for a (tenant, doc_key).
+
+    On update, the existing `doc_id`/`content_hash`/counts are overwritten with the new
+    version so the row always points at the currently-indexed document.
+    """
+
+    now = datetime.now(UTC)
+    async with (session or get_session_maker())() as s:
+        stmt = select(DocumentRegistry).where(
+            DocumentRegistry.tenant_id == tenant_id,
+            DocumentRegistry.doc_key == doc_key,
+        )
+        existing = (await s.execute(stmt)).scalar_one_or_none()
+        if existing is None:
+            s.add(
+                DocumentRegistry(
+                    tenant_id=tenant_id,
+                    doc_key=doc_key,
+                    doc_id=doc_id,
+                    title=title,
+                    content_type=content_type,
+                    source_url=source_url,
+                    content_hash=content_hash,
+                    chunk_count=chunk_count,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            existing.doc_id = doc_id
+            existing.title = title
+            existing.content_type = content_type
+            existing.source_url = source_url
+            existing.content_hash = content_hash
+            existing.chunk_count = chunk_count
+            existing.updated_at = now
+        await s.commit()
+
+
+async def delete_registry_by_doc_id(tenant_id: str, doc_id: str, session: AsyncSession | None = None) -> None:
+    """Remove any registry row that points at `doc_id`. Used when the prior version is deleted."""
+
+    async with (session or get_session_maker())() as s:
+        await s.execute(
+            delete(DocumentRegistry).where(
+                DocumentRegistry.tenant_id == tenant_id,
+                DocumentRegistry.doc_id == doc_id,
+            )
+        )
+        await s.commit()
 
 
 async def delete_tenant(tenant_id: str, session: AsyncSession | None = None) -> bool:

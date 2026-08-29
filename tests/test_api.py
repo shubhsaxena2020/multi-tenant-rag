@@ -175,6 +175,67 @@ def test_async_ingest_job_lifecycle(client):
     assert any("private collection" in h["text"] for h in q.json()["results"])
 
 
+def test_async_job_reingest_replaces_stale_chunks(client):
+    """The async job path (canonical) also dedupes: re-submitting the same source replaces prior chunks."""
+    import asyncio
+    from app.db import chunk_count, get_registry_entry
+
+    t = _make_tenant(client, "jobdedup")
+    auth = _auth(t["api_key"])
+    body = {
+        "kind": "text",
+        "title": "policy",
+        "text": "Company policy version one. " * 40,
+        "content_type": "text",
+    }
+
+    def _run_job(b):
+        r = client.post(f"{V}/jobdedup/ingest/jobs", headers=auth, json=b)
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+        final = None
+        for _ in range(40):
+            j = client.get(f"{V}/jobdedup/jobs/{job_id}", headers=auth)
+            final = j.json()
+            if final["status"] in ("completed", "failed"):
+                break
+            time.sleep(0.25)
+        assert final["status"] == "completed", final
+        return final["result_doc_id"]
+
+    d1 = _run_job(body)
+    d2 = _run_job({**body, "text": "Company policy version two, revised and longer. " * 80})
+
+    assert d2 != d1
+    # Stale chunks for d1 are gone; registry points at d2.
+    assert _job_point_count(t["tenant_id"], d1) == 0
+    reg = asyncio.run(get_registry_entry(t["tenant_id"], "text:policy:text"))
+    assert reg is not None and reg["doc_id"] == d2
+    # Quota not inflated beyond the newest version's chunk count.
+    used = asyncio.run(chunk_count(t["tenant_id"]))
+    assert used == reg["chunk_count"], f"quota inflated: {used} != {reg['chunk_count']}"
+
+
+def _job_point_count(tenant_id, doc_id):
+    from app.config import get_settings
+    from app.vector_store import get_client
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    client = get_client()
+    name = get_settings().collection_prefix
+    try:
+        resp = client.count(
+            collection_name=name,
+            count_filter=Filter(must=[
+                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+                FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+            ]),
+        )
+    except Exception:
+        return 0
+    return resp.count
+
+
 def test_job_isolation_other_tenant_cannot_see(client):
     t1 = _make_tenant(client, "acme")
     t2 = _make_tenant(client, "globex")
