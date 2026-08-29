@@ -13,17 +13,16 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import timezone
+import time
 
 from dulwich.repo import Repo
 from dulwich import porcelain
-from dulwich.objects import Commit, Tree, Blob
 
 REPO = os.path.dirname(os.path.abspath(__file__))
 
 
-def _identity(repo: Repo):
-    """Resolve committer/author name+email from .git/config or sane defaults."""
+def _identity(repo: Repo) -> bytes:
+    """Resolve committer/author 'Name <email>' from .git/config or sane defaults."""
     name = email = None
     try:
         cfg = repo.get_config()
@@ -31,14 +30,13 @@ def _identity(repo: Repo):
         email = cfg.get((b"user",), b"email")
     except Exception:
         pass
-    name = (name.decode() if name else "Hermes Agent") if name else "Hermes Agent"
-    email = (email.decode() if email else "hermes@localhost") if email else "hermes@localhost"
-    return name.encode(), email.encode()
+    name = (name.decode() if isinstance(name, bytes) else name) or "Hermes Agent"
+    email = (email.decode() if isinstance(email, bytes) else email) or "hermes@nousresearch.com"
+    return f"{name} <{email}>".encode()
 
 
 def cmd_status():
     st = porcelain.status(REPO)
-    # st = (staged, unstaged, untracked)
     print("staged (added):", list(st[0]) or "{}")
     print("unstaged:", list(st[1]) or "{}")
     print("untracked:", list(st[2]) or "{}")
@@ -54,36 +52,40 @@ def cmd_add(paths):
 
 def cmd_commit(msg):
     repo = Repo(REPO)
-    name, email = _identity(repo)
-    from datetime import datetime
-
-    now = datetime.now(timezone.utc)
-    ts = int(now.timestamp())
+    ident = _identity(repo)
+    now = int(time.time())
     off = 0
     commit_id = porcelain.commit(
-        REPO, message=msg.encode(), committer=email, author=email,
-        committer_time=ts, author_time=ts, committer_tz=off, author_tz=off,
+        REPO,
+        message=msg.encode(),
+        author=ident,
+        committer=ident,
+        author_timestamp=now,
+        commit_timestamp=now,
+        author_timezone=off,
+        commit_timezone=off,
     )
     print("committed", commit_id.decode()[:12])
 
 
 def cmd_tag(name, force=False):
     repo = Repo(REPO)
-    try:
-        porcelain.tag_create(
-            REPO, name.encode(), message=f"tag {name}".encode(),
-            annotated=True, force=force,
-        )
-        print("tagged", name)
-    except Exception as e:
-        if force:
-            raise
-        print("tag exists or error:", e)
+    ref_name = b"refs/tags/" + name.encode()
+    if force and ref_name in repo.refs:
+        del repo.refs[ref_name]
+        peeled = ref_name + b"^{}"
+        if peeled in repo.refs:
+            del repo.refs[peeled]
+    porcelain.tag_create(
+        REPO, name.encode(), message=f"tag {name}".encode(), annotated=True
+    )
+    print("tagged", name)
 
 
 def cmd_log(n=10):
     repo = Repo(REPO)
-    for i, entry in enumerate(porcelain.log(repo)):
+    entries = list(porcelain.log(repo))
+    for i, entry in enumerate(entries):
         if i >= n:
             break
         print(entry.decode()[:12])
