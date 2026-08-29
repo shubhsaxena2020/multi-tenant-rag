@@ -42,3 +42,22 @@ now work. Evidence this session:
   auth bug fixed, clickable citations + safe markdown + multi-turn added, hosted demo page added,
   SDK expanded (upload_file/ingest_sitemap/list_documents) + JS SDK skeleton. Merged PR #17,
   tagged v10.18-phase-c-widget-sdk. Only the npm *publish* step remains (external blocker above).
+- Issue #22 (PHASE A: safe Markdown rendering in the embeddable widget): DONE. Replaced the
+  plain-text `renderMarkdownSafe` with a strict allow-list `renderMarkdown()` that emits only a
+  fixed set of safe tags (`<strong>/<em>/<code>/<a>/<ul>/<ol>/<li>/<blockquote>/<pre>/<h1-3>`);
+  every text run is HTML-escaped and links are restricted to http(s) via `safeHref`. XSS-safe by
+  construction (verified by tests/test_widget_safe_markdown.py: malicious `<script>`, `<img
+  onerror>`, and `javascript:` links are neutralised). Bot answers + citation titles rendered
+  through it; user messages stay `textContent`. Merged PR #49-era Phase A, tagged
+  v16.48-widget-safe-md.
+
+## Open blockers / human decisions (operator-setup, not agent-fabricatable)
+These are real next-chapter items flagged in RESEARCH-NEXT-CHAPTER.md §3 that need human-owned
+credentials/decisions. Recorded, not blocked-on:
+- **SSO / SAML / OIDC login + SCIM** for the admin console — needs an IdP account/decision.
+- **SOC 2 / HIPAA formal controls & audit-export packaging** — needs operator/legal ownership.
+- **External monetization (Stripe billing, public pricing page)** — needs a Stripe account +
+  business decision; underlying metering (token usage, chunk quota, `plan`) already exists and is
+  exposed read-only.
+- **npm publish of `@hermes-rag/sdk`** — needs an npm token (see B1/open item above).
+- **Public DNS + TLS for hosted widget/API** — needs domain + cert (infra decision).

@@ -98,10 +98,16 @@ def test_widget_js_sends_real_apikey_not_placeholder(client):
 # ---------------- widget.html safe rendering ----------------
 def test_widget_html_no_untrusted_innerhtml(client):
     html = client.get("/widget.html").text
-    # All untrusted text must go through textContent / safeHref, never raw innerHTML of data.
-    # (The word "innerHTML" may appear in comments — only flag actual *assignments*.)
-    assert ".innerHTML =" not in html and "innerHTML =" not in html.replace("innerHTML =", "innerHTML="), \
-        "widget must not inject untrusted HTML via innerHTML"
+    # Untrusted answer text is rendered as formatted Markdown via the strict allow-list
+    # renderMarkdown() sanitizer (every text run escaped, only safe tags emitted, http(s) links
+    # only). The ONLY innerHTML assignment in the widget must feed that sanitizer — never a raw
+    # untrusted string. This is XSS-safe by construction.
+    assert "innerHTML = renderMarkdown(" in html, "bot answer must render through the safe sanitizer"
+    # Any other `.innerHTML =` assignment would be a regression; ensure none exist.
+    import re
+    for m in re.finditer(r"\.innerHTML\s*=\s*([^;]+);", html):
+        assert m.group(1).strip().startswith("renderMarkdown("), \
+            f"unsafe innerHTML assignment found: {m.group(0)}"
     # Citation links are validated to http(s) only.
     assert "safeHref" in html
     assert "textContent" in html
