@@ -54,6 +54,7 @@ from .conversation import (
     rewrite_query,
 )
 from .retrieval.rewrite import rewrite_query as pre_retrieval_rewrite
+from .retrieval.agentic import retrieve_multi_hop, multihop_denied
 from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
@@ -1265,13 +1266,34 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         was_rewritten = was_rewritten or conv_used
 
     acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
+
+    # (9d) Multi-hop retrieval (PHASE C). Plan-gated: standard tenants may only do a single
+    # retrieval; requesting >1 hop without a multi-hop plan is rejected with 402.
+    hop_count: int | None = None
+    if body.hops and body.hops > 1:
+        if multihop_denied(auth.plan, body.hops):
+            return JSONResponse(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                content={"error": "multi_hop_requires_paid_plan",
+                          "detail": "Multi-hop retrieval (>1 hop) requires an enterprise/pro plan."},
+            )
     hits = []
     degraded = False
     try:
-        hits = retrieve(
-            auth.tenant_id, rewritten, top_k=body.top_k,
-            candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
-        )
+        if body.hops and body.hops > 1 and not multihop_denied(auth.plan, body.hops):
+            merged, hop_count = retrieve_multi_hop(
+                auth.tenant_id, rewritten, plan=auth.plan, requested_hops=body.hops,
+                top_k=body.top_k, candidate_k=body.candidate_k, rerank=body.rerank,
+                acl_filter=acl_filter,
+            )
+            hits = merged
+        else:
+            hits = retrieve(
+                auth.tenant_id, rewritten, top_k=body.top_k,
+                candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
+            )
+            if body.hops == 1:
+                hop_count = 1
     except RagError as exc:
         # Backend degraded (Qdrant/embedder/reranker). Return a clean, contract-shaped
         # response with degraded=True rather than a 500 stack trace.
@@ -1360,6 +1382,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
         sub_questions=sub_questions if (sub_questions and len(sub_questions) != 1) else None,
+        hop_count=hop_count,
         out_of_scope=not in_scope, injection_detected=injection,
         degraded=degraded,
     )
