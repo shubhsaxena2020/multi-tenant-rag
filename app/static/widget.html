@@ -22,6 +22,14 @@
   form { display:flex; gap:8px; padding:10px; background:var(--card); }
   input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--txt); }
   button { padding:0 16px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-text); font-weight:600; }
+  /* Thumbs up/down feedback (issue #29) */
+  .feedback { display:flex; align-items:center; gap:6px; margin-top:6px; font-size:12px; color:#94a3b8; }
+  .fb-btn { cursor:pointer; border:1px solid #334155; background:transparent; color:var(--txt);
+            border-radius:6px; padding:2px 8px; font-size:13px; line-height:1; }
+  .fb-btn:hover { border-color:var(--accent); }
+  .fb-btn[aria-pressed="true"] { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
+  .fb-btn:disabled { opacity:0.55; cursor:default; }
+  .fb-thanks { font-style:italic; }
 </style>
 </head>
 <body>
@@ -222,7 +230,8 @@ function citationHref(s) {
   return null;
 }
 
-function addMsg(cls, text, sources) {
+function addMsg(cls, text, sources, opts) {
+  opts = opts || {};
   var d = el("div", "msg " + cls);
   var body = el("div", "bot-body");
   if (cls.indexOf("user") >= 0) {
@@ -246,9 +255,48 @@ function addMsg(cls, text, sources) {
     });
     d.appendChild(wrap);
   }
+  // PHASE D (#29): thumbs up/down feedback capture under each bot answer.
+  if (cls.indexOf("bot") >= 0 && opts.feedback !== false) {
+    d.appendChild(addFeedback(opts.question, opts.answer));
+  }
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
   return d;
+}
+
+// Build the 👍/👎 control. Posts to POST /{tenant}/feedback (tenant secret key).
+function addFeedback(question, answer) {
+  var row = el("div", "feedback");
+  var label = el("span"); label.textContent = "Was this helpful?";
+  var up = el("button", "fb-btn"); up.type = "button"; up.textContent = "\u{1F44D}"; up.setAttribute("aria-label", "Thumbs up");
+  var down = el("button", "fb-btn"); down.type = "button"; down.textContent = "\u{1F44E}"; down.setAttribute("aria-label", "Thumbs down");
+  var thanks = el("span", "fb-thanks");
+
+  function submit(rating, btn) {
+    up.disabled = true; down.disabled = true;
+    up.setAttribute("aria-pressed", String(btn === up));
+    down.setAttribute("aria-pressed", String(btn === down));
+    thanks.textContent = " Thanks!";
+    row.appendChild(thanks);
+    if (!tenant || !apiKey || !base) return; // can't reach the API; keep UI state only
+    fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(tenant) + "/feedback", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        rating: rating,
+        session_id: sessionId || undefined,
+        question: question || undefined,
+        answer: answer || undefined,
+      }),
+    }).catch(function () { /* best-effort: UI already reflects the choice */ });
+  }
+
+  up.onclick = function () { submit("up", up); };
+  down.onclick = function () { submit("down", down); };
+  row.appendChild(label);
+  row.appendChild(up);
+  row.appendChild(down);
+  return row;
 }
 
 document.getElementById("close").onclick = function () {
@@ -304,7 +352,7 @@ document.getElementById("form").onsubmit = async function (ev) {
         else if (ev === "error") { bot.textContent = "Error: " + (data.error || "unknown"); }
       }
     }
-    addMsg("bot", answer || "(no answer)", sources);
+    addMsg("bot", answer || "(no answer)", sources, { question: q, answer: answer });
     bot.remove();
   } catch (e) { bot.textContent = "Network error."; }
 };

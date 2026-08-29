@@ -65,6 +65,7 @@ from .models import (
     DocumentOut,
     EvalReportOut,
     EvalSetIn,
+    FeedbackIn,
     IngestJobRequest,
     IngestText,
     IngestUrl,
@@ -96,6 +97,7 @@ from .observability import (
     metrics_response,
 )
 from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
+from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -563,6 +565,37 @@ async def admin_usage(tenant: str, _: None = Depends(require_admin), days: int =
         return Response(content=csv_text, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=usage_{tenant}.csv"})
     return {"summary": summary.to_dict(), "timeseries": series}
+
+
+# ---------------- Admin: per-tenant feedback reporting (PHASE D #29) ----------------
+@app.get("/admin/feedback/{tenant}", response_model=dict)
+async def admin_feedback(tenant: str, _: None = Depends(require_admin), limit: int = 100,
+                         rating: str | None = None, fmt: str = "json"):
+    """Operator-only feedback report for a tenant: summary (up/down/total + positive_rate) plus
+    recent entries. `fmt=csv` returns an exportable CSV of the entries."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    summary = await get_feedback_summary(tenant)
+    entries = await list_feedback(tenant, limit=limit, rating=rating)
+    if fmt == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["id", "rating", "session_id", "message_id", "question", "answer", "comment", "ts"])
+        for e in entries:
+            w.writerow([e["id"], e["rating"], e.get("session_id"), e.get("message_id"),
+                        (e.get("question") or "").replace("\n", " "),
+                        (e.get("answer") or "").replace("\n", " "),
+                        (e.get("comment") or "").replace("\n", " "), e["ts"]])
+        csv_text = buf.getvalue()
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=feedback_{tenant}.csv"})
+    return {"summary": summary, "entries": entries}
 
 
 # ---------------- Admin: tenants ----------------
@@ -1389,6 +1422,24 @@ async def tenant_usage(tenant: str, auth: TenantDep, request: Request, _: None =
     rate_limit(request, auth.tenant_id)
     summary = await get_usage_summary(auth.tenant_id, days=days)
     return summary.to_dict()
+
+
+@app.post("/api/v1/{tenant}/feedback", response_model=dict, status_code=status.HTTP_200_OK)
+async def post_feedback(tenant: str, body: FeedbackIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """PHASE D (#29): capture a thumbs up/down (and optional comment) for an answer.
+    `rating` is validated by FeedbackIn ('up'|'down'). The caller supplies the session/question/
+    answer context so the signal is analyzable."""
+    rate_limit(request, auth.tenant_id)
+    fid = await save_feedback(
+        auth.tenant_id,
+        rating=body.rating,
+        session_id=body.session_id,
+        message_id=body.message_id,
+        comment=body.comment,
+        question=body.question,
+        answer=body.answer,
+    )
+    return {"id": fid, "rating": body.rating}
 
 
 @v1.post("/{tenant}/eval/golden/auto", response_model=dict)

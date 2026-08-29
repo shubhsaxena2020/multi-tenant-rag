@@ -377,3 +377,15 @@ class EvalReportOut(BaseModel):
     ndcg: float
     context_recall: float
     avg_latency_ms: float
+
+
+# ---------- Feedback (PHASE D: thumbs up/down capture) ----------
+from typing import Literal
+
+class FeedbackIn(BaseModel):
+    rating: Literal["up", "down"]
+    session_id: str | None = None
+    message_id: str | None = None
+    comment: str | None = Field(default=None, max_length=2000)
+    question: str | None = None
+    answer: str | None = None
