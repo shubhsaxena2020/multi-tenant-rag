@@ -99,10 +99,20 @@ class RagClient:
 
     # ---------------- eval ----------------
     def put_eval_set(self, tenant: str, name: str, items: list[dict]) -> dict:
-        return self._put(f"/{tenant}/eval-sets/{name}", {"items": items})
+        return self._put(f"/{tenant}/eval/set", {"items": items})
 
-    def run_eval(self, tenant: str, name: str) -> dict:
-        return self._post(f"/{tenant}/eval/{name}", {})
+    def run_eval(self, tenant: str, name: str | None = None) -> dict:
+        return self._post(f"/{tenant}/eval/run", {})
+
+    def run_eval_quality(self, tenant: str, *, top_k: int = 8, candidate_k: int = 30,
+                         rerank: bool = True, generate_answer: bool = True) -> dict:
+        """Run the self-hosted LLM-judge answer-quality eval against the tenant's golden
+        set. POSTs to /{tenant}/eval/quality (the real contract), NOT a fabricated path."""
+        return self._post(
+            f"/{tenant}/eval/quality",
+            {"top_k": top_k, "candidate_k": candidate_k, "rerank": rerank,
+             "generate_answer": generate_answer},
+        )
 
     # ---------------- http plumbing ----------------
     def _headers(self, admin: bool = False) -> dict:
@@ -124,3 +134,72 @@ class RagClient:
         r = requests.delete(f"{self.base_url}{path}", headers=self._headers(), timeout=self.timeout)
         r.raise_for_status()
         return r.json()
+
+
+class AsyncRagClient:
+    """Async twin of RagClient (PHASE C). Uses httpx.AsyncClient so callers can `await`
+    queries without blocking the event loop. Mirrors the same REST contract."""
+
+    def __init__(self, base_url: str, api_key: str, timeout: float = 30.0, admin_key: str | None = None):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.admin_key = admin_key
+        self.timeout = timeout
+        self._session: Any | None = None
+
+    def _get_session(self):
+        if self._session is None:
+            import httpx
+
+            # Mirror RagClient (sync): the base URL already carries /api/v1, so we pass
+            # full request URLs (base_url + path) rather than letting httpx strip the
+            # prefix. This keeps the async and sync clients behaviorally identical.
+            self._session = httpx.AsyncClient(
+                headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                timeout=self.timeout,
+            )
+        return self._session
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        await self.aclose()
+
+    async def aclose(self):
+        if self._session is not None:
+            await self._session.aclose()
+            self._session = None
+
+    async def query(self, tenant: str, question: str, *, top_k: int = 5, generate: bool = False,
+                    rerank: bool = True, session_id: str | None = None, acl: list[str] | None = None) -> dict:
+        body = {"question": question, "top_k": top_k, "generate": generate, "rerank": rerank}
+        if session_id:
+            body["session_id"] = session_id
+        if acl is not None:
+            body["acl"] = acl
+        resp = await self._get_session().post(self._url(f"/{tenant}/query"), json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def ingest_text(self, tenant: str, title: str, content: str, content_type: str = "text",
+                          acl: list[str] | None = None) -> dict:
+        body = {"title": title, "content": content, "content_type": content_type}
+        if acl is not None:
+            body["acl"] = acl
+        resp = await self._get_session().post(self._url(f"/{tenant}/documents"), json=body)
+        resp.raise_for_status()
+        return resp.json()
+
+    async def run_eval_quality(self, tenant: str, *, top_k: int = 8, candidate_k: int = 30,
+                               rerank: bool = True, generate_answer: bool = True) -> dict:
+        resp = await self._get_session().post(
+            self._url(f"/{tenant}/eval/quality"),
+            json={"top_k": top_k, "candidate_k": candidate_k, "rerank": rerank,
+                  "generate_answer": generate_answer},
+        )
+        resp.raise_for_status()
+        return resp.json()

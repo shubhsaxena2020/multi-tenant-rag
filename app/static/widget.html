@@ -5,19 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>RAG Chat</title>
 <style>
-  :root { --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --txt:#e2e8f0; }
+  :root {
+    --bg:#0f172a; --card:#1e293b; --accent:#38bdf8; --txt:#e2e8f0; --src:#94a3b8;
+    --user-bg:#38bdf8; --user-txt:#04263a;
+  }
+  html[data-theme="light"] {
+    --bg:#ffffff; --card:#f1f5f9; --accent:#0ea5e9; --txt:#0f172a; --src:#64748b;
+    --user-bg:#0ea5e9; --user-txt:#ffffff;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
-  header { padding:10px 14px; background:var(--card); font-weight:600; display:flex; justify-content:space-between; align-items:center; }
+  body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background:var(--bg); color:var(--txt); height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 14px; background:var(--card); font-weight:600; display:flex;
+           justify-content:space-between; align-items:center; }
   #close { cursor:pointer; border:0; background:transparent; color:var(--txt); font-size:18px; }
   #log { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
-  .msg { max-width:85%; padding:8px 12px; border-radius:12px; line-height:1.4; white-space:pre-wrap; }
-  .user { align-self:flex-end; background:var(--accent); color:#04263a; }
+  .msg { max-width:85%; padding:8px 12px; border-radius:12px; line-height:1.4; white-space:pre-wrap; word-wrap:break-word; }
+  .user { align-self:flex-end; background:var(--user-bg); color:var(--user-txt); }
   .bot { align-self:flex-start; background:var(--card); }
-  .src { font-size:11px; opacity:.7; }
+  .src { font-size:11px; opacity:.8; margin-top:4px; display:flex; flex-direction:column; gap:2px; }
+  .src a { color:var(--accent); text-decoration:none; }
+  .src a:hover { text-decoration:underline; }
+  .src .n { color:var(--src); }
   form { display:flex; gap:8px; padding:10px; background:var(--card); }
-  input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:var(--txt); }
-  button { padding:0 16px; border:0; border-radius:8px; background:var(--accent); color:#04263a; font-weight:600; }
+  input { flex:1; padding:10px; border-radius:8px; border:1px solid #334155; background:var(--bg); color:var(--txt); }
+  button { padding:0 16px; border:0; border-radius:8px; background:var(--accent); color:var(--user-txt); font-weight:600; }
 </style>
 </head>
 <body>
@@ -28,17 +40,45 @@
   <button type="submit">Send</button>
 </form>
 <script>
-/* Widget UI running inside the sandboxed iframe (v9-3). Communicates with the
-   embedding host page via postMessage and calls the RAG API directly (Bearer key is
-   passed in from the host loader, never hardcoded here). */
-var tenant = "", apiKey = "", base = "";
+/* Widget UI running inside the sandboxed iframe (v9-3, hardened in PHASE C).
+   - Multi-turn: a stable session_id is generated once and sent with every turn so the
+     backend rewrites follow-ups against prior context (PHASE C).
+   - Clickable citations: source URLs from the `sources` SSE event are rendered as links.
+   - Theming: --accent / --theme are applied from the loader's data-attributes. */
+var tenant = "", apiKey = "", base = "", title = "", theme = "dark", accent = "";
+// Stable per-widget-instance session id -> enables real multi-turn conversation.
+var sessionId = "sess-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 var log = document.getElementById("log");
-function addMsg(cls, text, src) {
+
+function applyTheme() {
+  document.documentElement.setAttribute("data-theme", theme || "dark");
+  if (accent) {
+    document.documentElement.style.setProperty("--accent", accent);
+    document.documentElement.style.setProperty("--user-bg", accent);
+  }
+}
+function addMsg(cls, text, srcList) {
   var d = document.createElement("div");
   d.className = "msg " + cls;
+  // Render answer text safely (textContent prevents HTML/script injection from the LLM).
   d.textContent = text;
-  if (src) { var s = document.createElement("div"); s.className = "src"; s.textContent = "source: " + src; d.appendChild(s); }
+  if (srcList && srcList.length) {
+    var s = document.createElement("div"); s.className = "src";
+    var head = document.createElement("span"); head.className = "n";
+    head.textContent = "📚 " + srcList.length + " source" + (srcList.length > 1 ? "s" : "");
+    s.appendChild(head);
+    srcList.forEach(function (src) {
+      var a = document.createElement("a");
+      var label = src.title || src.url || "source";
+      a.textContent = "• " + label;
+      if (src.url) { a.href = src.url; a.target = "_blank"; a.rel = "noopener noreferrer"; }
+      else { a.style.cursor = "default"; }
+      s.appendChild(a);
+    });
+    d.appendChild(s);
+  }
   log.appendChild(d); log.scrollTop = log.scrollHeight;
+  return d;
 }
 document.getElementById("close").onclick = function () {
   parent.postMessage({ type: "rag:toggle", open: false }, "*");
@@ -46,6 +86,8 @@ document.getElementById("close").onclick = function () {
 window.addEventListener("message", function (e) {
   if (e.data && e.data.type === "rag:config") {
     tenant = e.data.tenant; apiKey = e.data.apiKey; base = e.data.base;
+    title = e.data.title || "Chat"; theme = e.data.theme || "dark"; accent = e.data.accent || "";
+    applyTheme();
     parent.postMessage({ type: "rag:toggle", open: true }, "*");
   }
 });
@@ -58,16 +100,16 @@ document.getElementById("form").onsubmit = async function (ev) {
   if (!q || !apiKey) return;
   document.getElementById("q").value = "";
   addMsg("user", q);
-  var bot = document.createElement("div"); bot.className = "msg bot"; log.appendChild(bot);
-  log.scrollTop = log.scrollHeight;
+  var bot = addMsg("bot", "…");
   try {
     var resp = await fetch(base.replace(/\/$/,"") + "/" + encodeURIComponent(tenant) + "/query/stream", {
       method: "POST",
       headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q, generate: true, top_k: 4 })
+      // session_id drives multi-turn rewriting; publishable key is query-scoped (PHASE C).
+      body: JSON.stringify({ question: q, generate: true, top_k: 4, session_id: sessionId })
     });
-    if (!resp.ok) { addMsg("bot", "Error: " + resp.status); return; }
-    var reader = resp.body.getReader(), decoder = new TextDecoder(), buf = "", answer = "";
+    if (!resp.ok) { bot.textContent = "Error: " + resp.status; return; }
+    var reader = resp.body.getReader(), decoder = new TextDecoder(), buf = "", answer = "", sources = [];
     while (true) {
       var { value, done } = await reader.read();
       if (done) break;
@@ -77,11 +119,14 @@ document.getElementById("form").onsubmit = async function (ev) {
         var m = p.match(/^event: (\w+)\ndata: (.*)$/s);
         if (!m) continue;
         var ev = m[1], data = JSON.parse(m[2]);
-        if (ev === "sources" && data.length) { addMsg("src", "📚 " + data.length + " source(s)", ""); }
+        if (ev === "sources") { sources = data || []; }
         else if (ev === "token") { answer += data; bot.textContent = answer; log.scrollTop = log.scrollHeight; }
         else if (ev === "error") { bot.textContent = "Error: " + data.error; }
       }
     }
+    // Re-render with citations once the full answer (and sources) are known.
+    addMsg("bot", answer || "(no answer)", sources);
+    log.removeChild(bot);
   } catch (e) { bot.textContent = "Network error."; }
 };
 </script>

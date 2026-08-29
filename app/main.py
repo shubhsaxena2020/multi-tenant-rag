@@ -973,7 +973,9 @@ def query_stream(
             in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
 
             sources = [{"chunk_id": h["chunk_id"], "title": h.get("title"),
-                        "snippet": h["text"][:280]} for h in hits[:body.top_k]]
+                        "snippet": h["text"][:280],
+                        "url": (h.get("metadata") or {}).get("source_url")}
+                       for h in hits[:body.top_k]]
             yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
 
             answer = None
