@@ -456,6 +456,50 @@ async def audit_verify(_: None = Depends(require_admin)):
     return await verify_chain()
 
 
+# ---------------- Admin: console (operator single-view, no raw curl) ----------------
+
+@v1.get("/admin/console", response_model=dict)
+async def admin_console(_: None = Depends(require_admin), limit_per_tenant: int = 20):
+    """PHASE F: lightweight operator console. One call returns every tenant with its
+    registry info, live usage, indexed document count, knowledge-gap count, and the
+    audit-chain integrity status — so an operator can manage tenants/keys/docs without
+    hand-crafting many curl commands. Admin-Key gated (fail-closed)."""
+    from .db import list_documents as _list_documents, list_tenants as _list_tenants
+
+    tlist = await _list_tenants()  # dict rows (api_key intentionally not exposed)
+    audit = await verify_chain()
+    tenants_view = []
+    for t in tlist:
+        tid = t["tenant_id"]
+        try:
+            usage = await get_usage(tid)
+        except Exception:  # noqa: BLE001 — one tenant's metering must not break the console
+            usage = None
+        try:
+            docs = await _list_documents(tid, limit=limit_per_tenant)
+        except Exception:  # noqa: BLE001
+            docs = []
+        try:
+            gaps = await list_knowledge_gaps(tid, limit=limit_per_tenant)
+        except Exception:  # noqa: BLE001
+            gaps = []
+        tenants_view.append({
+            "tenant_id": tid,
+            "name": t.get("name"),
+            "plan": t.get("plan"),
+            "chunk_count": t.get("chunk_count", 0),
+            "created_at": (ca.isoformat() if (ca := t.get("created_at")) else None),
+            "usage": usage,
+            "document_count": len(docs),
+            "knowledge_gap_count": len(gaps),
+        })
+    return {
+        "tenant_count": len(tenants_view),
+        "audit_chain_ok": bool(audit.get("ok")),
+        "tenants": tenants_view,
+    }
+
+
 # ---------------- Admin: tenants ----------------
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
