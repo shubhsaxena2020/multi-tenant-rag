@@ -55,6 +55,7 @@ from .conversation import (
 )
 from .retrieval.rewrite import rewrite_query as pre_retrieval_rewrite
 from .retrieval.agentic import retrieve_multi_hop, multihop_denied
+from .faithfulness import score_faithfulness, is_refusal
 from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
@@ -97,6 +98,7 @@ from .observability import (
     QUERY_HITS,
     RETRIEVAL_LATENCY,
     REWRITE_USED,
+    FAITHFULNESS_SCORE,
     MetricsMiddleware,
     get_logger,
     metrics_response,
@@ -1356,6 +1358,23 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
                 model=get_settings().llm_model, session_id=body.session_id,
             )
 
+    # PHASE D (#19-#24): citation faithfulness + no-answer detection.
+    # Score the generated answer's grounding in the retrieved context whenever an answer exists.
+    faithfulness: float | None = None
+    answerable: bool | None = None
+    if answer is not None:
+        context_chunks = [h.get("text", "") for h in hits]
+        faithfulness, answerable = score_faithfulness(answer, context_chunks)
+        FAITHFULNESS_SCORE.observe(faithfulness)
+        # No-answer path: a safe refusal ("I don't know") is already a correct no-answer with
+        # citations; leave it intact. Only when the answer is NOT a refusal but scored as
+        # unanswerable do we swap in the safe no-answer message (citations still surfaced).
+        if not answerable and not is_refusal(answer):
+            answer = (
+                "I don't have enough information in the available documents to answer that. "
+                "See the cited sources for related context."
+            )
+
     # Best-effort answer text for session history (anchors follow-up rewriting).
     turn_answer = answer or (hits[0]["text"] if hits else "")
 
@@ -1383,6 +1402,8 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         rewritten_query=rewritten if was_rewritten else None,
         sub_questions=sub_questions if (sub_questions and len(sub_questions) != 1) else None,
         hop_count=hop_count,
+        faithfulness=faithfulness,
+        answerable=answerable,
         out_of_scope=not in_scope, injection_detected=injection,
         degraded=degraded,
     )
