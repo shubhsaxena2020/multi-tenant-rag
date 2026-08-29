@@ -75,6 +75,21 @@ function safeHref(url) {
 
 function escapeText(s) { return s == null ? "" : String(s); }
 
+// Build a clickable citation link. Prefer the real source_url (external page). When a
+// document has no external URL (uploaded/text ingests), fall back to the hosted source
+// viewer on the RAG service, passing the secret key in the URL *fragment* (never sent to
+// the server / not in Referer) so the viewer page can fetch the document.
+function citationHref(s) {
+  var ext = safeHref(s && s.url);
+  if (ext) return ext;
+  if (s && s.doc_id && tenant && base) {
+    var root = base.replace(/\/api\/v1\/?$/, "");
+    return root + "/doc/" + encodeURIComponent(tenant) + "/" + encodeURIComponent(s.doc_id) +
+           "#token=" + encodeURIComponent(apiKey);
+  }
+  return null;
+}
+
 function addMsg(cls, text, sources) {
   var d = el("div", "msg " + cls);
   d.textContent = text || "";
@@ -82,11 +97,11 @@ function addMsg(cls, text, sources) {
     var wrap = el("div");
     wrap.style.marginTop = "6px";
     sources.forEach(function (s, i) {
-      var href = safeHref(s.url);
+      var href = citationHref(s);
       var a = el("a", "cite");
       a.textContent = "[" + (i + 1) + "] " + (s.title || "source");
-      if (href) { a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; }
-      else { a.removeAttribute("href"); }
+      if (href) { a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = s.url || "Open source"; }
+      else { a.removeAttribute("href"); a.title = "source"; }
       wrap.appendChild(a);
     });
     d.appendChild(wrap);

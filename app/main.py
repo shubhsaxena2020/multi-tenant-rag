@@ -59,6 +59,8 @@ from .ingestion.runner import submit
 from .models import (
     DocumentCatalogItem,
     DocumentCatalogPage,
+    DocumentChunksOut,
+    DocumentChunkOut,
     DocumentCreate,
     DocumentOut,
     EvalReportOut,
@@ -110,6 +112,7 @@ from .vector_store import (
     delete_tenant_collection,
     ensure_collection,
     get_client,
+    get_document_chunks,
 )
 
 log = get_logger("rag")
@@ -410,6 +413,78 @@ def widget_demo():
     return HTMLResponse(body, media_type="text/html")
 
 
+@app.get("/doc/{tenant}/{doc_id}")
+def document_viewer(tenant: str, doc_id: str):
+    """Hosted source viewer for citation deep-links (issue #6).
+
+    Rendered as a real, openable page so every citation is a clickable link — including for
+    documents ingested by upload/text (which have no external `source_url`). The tenant's
+    secret key is read from the URL *fragment* (`#token=...`) so it is never sent to the
+    server in the request line or leaked via Referer; the page then fetches the document via
+    the API with `Authorization: Bearer ***.
+    """
+    html = _DOC_VIEWER_HTML.format(tenant=tenant, doc_id=doc_id, api_base="/api/v1")
+    return HTMLResponse(
+        html,
+        media_type="text/html",
+        headers={"Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'"},
+    )
+
+
+_DOC_VIEWER_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Source &mdash; {tenant}</title>
+<style>
+  body{{ font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; background:#0f172a; color:#e2e8f0; }}
+  header{{ padding:14px 18px; background:#1e293b; position:sticky; top:0; border-bottom:1px solid #334155; }}
+  header a{{ color:#38bdf8; }}
+  main{{ max-width:820px; margin:0 auto; padding:20px; }}
+  .meta{{ color:#94a3b8; font-size:13px; margin:6px 0 18px; }}
+  .chunk{{ background:#1e293b; border:1px solid #334155; border-radius:10px; padding:14px 16px; margin:12px 0; white-space:pre-wrap; line-height:1.55; }}
+  .chunk-id{{ color:#64748b; font-size:11px; }}
+  #err{{ color:#fca5a5; }}
+</style></head>
+<body>
+<header><strong id="title">Loading source&hellip;</strong></header>
+<main>
+  <div class="meta" id="meta"></div>
+  <div id="err"></div>
+  <div id="chunks"></div>
+</main>
+<script>
+  var TENANT = "{tenant}", DOC = "{doc_id}", API = "{api_base}";
+  function token() {{
+    var h = location.hash || "";
+    var m = h.match(/token=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  }}
+  function esc(s) {{ var d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }}
+  (async function () {{
+    var tk = token();
+    if (!tk) {{ document.getElementById("err").textContent = "Missing access token (#token=...). Open this link from the chat widget."; return; }}
+    try {{
+      var r = await fetch(API + "/" + encodeURIComponent(TENANT) + "/documents/" + encodeURIComponent(DOC), {{
+        headers: {{ "Authorization": "Bearer " + tk }}
+      }});
+      if (!r.ok) {{ document.getElementById("err").textContent = "Error " + r.status; return; }}
+      var d = await r.json();
+      document.getElementById("title").textContent = d.title || DOC;
+      var meta = document.getElementById("meta");
+      meta.innerHTML = "content_type: " + esc(d.content_type);
+      if (d.source_url) meta.innerHTML += ' &middot; <a href="' + esc(d.source_url) + '" target="_blank" rel="noopener noreferrer">original source</a>';
+      var box = document.getElementById("chunks");
+      (d.chunks || []).forEach(function (c, i) {{
+        var el = document.createElement("div"); el.className = "chunk";
+        el.innerHTML = '<div class="chunk-id">chunk ' + (i + 1) + (c.title ? " &middot; " + esc(c.title) : "") + '</div>' + esc(c.text);
+        box.appendChild(el);
+      }});
+    }} catch (e) {{ document.getElementById("err").textContent = "Failed to load: " + e.message; }}
+  }})();
+</script>
+</body></html>"""
+
+
 @app.get("/health/slo")
 def health_slo():
     """v9-5: current SLO status (availability + p95 latency) vs configured targets."""
@@ -654,6 +729,32 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
 
 
 # ---------------- Document management ----------------
+@v1.get("/{tenant}/documents/{doc_id}", response_model=DocumentChunksOut, status_code=status.HTTP_200_OK)
+async def get_document(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """Fetch a document's full content (all chunks) for the hosted source viewer / citation
+    deep-links (issue #6). Secret-key gated so a link can't expose another tenant's content."""
+    rate_limit(request, auth.tenant_id)
+    try:
+        chunks = get_document_chunks(auth.tenant_id, doc_id)
+    except Exception:
+        raise HTTPException(status_code=502, detail="retrieval backend unavailable")
+    if not chunks:
+        raise HTTPException(status_code=404, detail="document not found")
+    first = chunks[0]
+    meta = first.get("metadata") or {}
+    source_url = meta.get("source_url")
+    return DocumentChunksOut(
+        doc_id=doc_id,
+        title=first.get("title") or doc_id,
+        content_type=meta.get("content_type") or "text",
+        source_url=source_url,
+        chunks=[DocumentChunkOut(
+            chunk_id=c["chunk_id"], title=c.get("title"), text=c.get("text", ""),
+            metadata=c.get("metadata") or {},
+        ) for c in chunks],
+    )
+
+
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
@@ -996,8 +1097,10 @@ def query_stream(
             in_scope, _ = assess_confidence(hits, get_settings().retrieval_confidence_threshold)
 
             # Include source_url so the widget can render clickable citations (PHASE C #6).
-            sources = [{"chunk_id": h["chunk_id"], "title": h.get("title"),
-                        "snippet": h["text"][:280],
+            # doc_id + chunk_id let the widget deep-link to the hosted viewer when no external
+            # URL exists (uploaded/text docs), so every citation is a real, openable link.
+            sources = [{"chunk_id": h["chunk_id"], "doc_id": h.get("doc_id"),
+                        "title": h.get("title"), "snippet": h["text"][:280],
                         "url": (h.get("metadata") or {}).get("source_url")}
                        for h in hits[:body.top_k]]
             yield f"event: sources\ndata: {json.dumps(sources)}\n\n"

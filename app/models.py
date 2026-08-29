@@ -123,7 +123,23 @@ class DocumentOut(BaseModel):
     )
 
 
-# ---------- Sitemap onboarding / catalog (issue #7, #12) ----------
+class DocumentChunkOut(BaseModel):
+    """A single chunk of a document, as returned by the source viewer (issue #6)."""
+    chunk_id: str
+    title: str | None = None
+    text: str
+    metadata: dict[str, Any] = {}
+
+
+class DocumentChunksOut(BaseModel):
+    """Full document content for the hosted source viewer / citation deep-links (issue #6)."""
+    doc_id: str
+    title: str
+    content_type: str
+    source_url: str | None = None
+    chunks: list[DocumentChunkOut]
+
+
 class DocumentCatalogItem(BaseModel):
     """One row in a tenant's index catalog (issue #12).
 

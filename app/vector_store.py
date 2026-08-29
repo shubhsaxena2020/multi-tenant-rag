@@ -245,7 +245,8 @@ def _hit(p) -> dict[str, Any]:
         "title": payload.get("title"),
         "text": crypto.decrypt_text(payload.get("tenant_id", ""), payload.get("text", "")),
         "metadata": {k: v for k, v in payload.items() if k not in ("text", "tenant_id")},
-        "score": float(p.score),
+        # scroll() returns Record (no score); query_points returns ScoredPoint (has score).
+        "score": float(getattr(p, "score", 0.0) or 0.0),
     }
 
 
@@ -333,3 +334,41 @@ def search_hybrid(
         raise  # let the global handler turn this into a degraded response
 
     return [_hit(p) for p in resp.points]
+
+
+def get_document_chunks(tenant_id: str, doc_id: str) -> list[dict]:
+    """Return every chunk of a single document (for the hosted source viewer / citation
+    deep-links, issue #6). Scrolls Qdrant by (tenant_id, doc_id) and decrypts text.
+
+    Returns a list of {chunk_id, title, text, metadata} ordered by chunk id.
+    """
+    client = get_client()
+    name = ensure_collection(client)
+    qfilter = Filter(must=[
+        FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+        FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+    ])
+    points: list = []
+    try:
+        next_offset = None
+        while True:
+            resp = with_retry(
+                "qdrant",
+                lambda: client.scroll(
+                    collection_name=name,
+                    scroll_filter=qfilter,
+                    with_payload=True,
+                    with_vectors=False,
+                    limit=256,
+                    offset=next_offset,
+                ),
+            )
+            batch, next_offset = resp
+            points.extend(batch)
+            if not next_offset:
+                break
+    except RagError:
+        raise
+    chunks = [_hit(p) for p in points]
+    chunks.sort(key=lambda c: str(c.get("chunk_id") or ""))
+    return chunks
