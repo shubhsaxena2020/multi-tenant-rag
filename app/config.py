@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     slo_latency_p95_s: float = 1.5      # p95 request latency target (seconds)
     slo_availability: float = 0.995     # availability target (fraction, 99.5%)
 
+    # Audit trail (P1 #5): fraction of tenant data-plane actions (ingest/query/
+    # doc-delete/eval) written to the tamper-evident log. 1.0 = every event;
+    # lower = sampled. 0 disables data-plane auditing (admin actions always logged).
+    audit_sample_rate: float = 1.0
+
     @field_validator("allowed_embed_origins", mode="before")
     @classmethod
     def _empty_str_to_list(cls, v):
