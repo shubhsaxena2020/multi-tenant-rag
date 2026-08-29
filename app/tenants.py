@@ -25,6 +25,9 @@ from .db import (
     set_tenant_branding as _set_tenant_branding,
 )
 from .db import (
+    set_tenant_system_prompt as _set_tenant_system_prompt,
+)
+from .db import (
     delete_tenant as _delete_tenant,
 )
 from .db import (
@@ -58,8 +61,9 @@ async def create_tenant(
     plan: str,
     allowed_groups: list[str] | None = None,
     branding: dict | None = None,
+    system_prompt: str = "",
 ) -> TenantRow:
-    data = await _create_tenant(name, tenant_id, api_key, plan, allowed_groups, branding=branding)
+    data = await _create_tenant(name, tenant_id, api_key, plan, allowed_groups, branding=branding, system_prompt=system_prompt or "")
     return TenantRow(**data)
 
 
@@ -130,3 +134,8 @@ async def delete_tenant(tenant_id: str) -> bool:
 async def set_tenant_branding(tenant_id: str, branding: dict) -> bool:
     """Persist a tenant's sanitized branding blob (issue #23). Returns True if tenant exists."""
     return await _set_tenant_branding(tenant_id, branding)
+
+
+async def set_tenant_system_prompt(tenant_id: str, system_prompt: str) -> bool:
+    """PHASE D (#35): persist a tenant's persona/system prompt (operator-trusted config)."""
+    return await _set_tenant_system_prompt(tenant_id, system_prompt or "")

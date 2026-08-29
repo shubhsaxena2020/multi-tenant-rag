@@ -84,6 +84,7 @@ from .models import (
     TenantCreate,
     TenantKeysOut,
     TenantOut,
+    TenantSystemPromptIn,
     WidgetConfigOut,
     UploadOut,
 )
@@ -921,6 +922,23 @@ async def update_branding(tenant: str, body: TenantBranding, request: Request, _
     )
 
 
+@v1.patch("/{tenant}/system-prompt", response_model=TenantOut, status_code=status.HTTP_200_OK)
+async def update_system_prompt(tenant: str, body: TenantSystemPromptIn, request: Request, _: None = Depends(require_admin)):
+    """Set/update a tenant's custom system prompt / persona (admin only)."""
+    success = await tenants.set_tenant_system_prompt(tenant, body.system_prompt)
+    if not success:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    row = await tenants.get_tenant(tenant)
+    if row is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return TenantOut(
+        tenant_id=row.tenant_id, name=row.name, api_key=f"{row.api_key}...",
+        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
+        allowed_groups=row.allowed_groups, branding=row.branding or {},
+        system_prompt=row.system_prompt or "",
+    )
+
+
 # ---------------- Sitemap onboarding (issue #7) ----------------
 @v1.post("/{tenant}/ingest/sitemap", response_model=SitemapJobOut, status_code=status.HTTP_202_ACCEPTED)
 async def create_sitemap_job(tenant: str, body: SitemapIngestIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
@@ -1180,7 +1198,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
             answer = ("I don't have information on that in the available documents. "
                       "Let me connect you with support, or try rephrasing your question.")
         else:
-            answer = generate_answer(rewritten, hits)
+            answer = generate_answer(rewritten, hits, system_prompt=auth.system_prompt or "")
 
     # Best-effort answer text for session history (anchors follow-up rewriting).
     turn_answer = answer or (hits[0]["text"] if hits else "")
@@ -1274,7 +1292,7 @@ def query_stream(
                     answer = "I don't have information on that in the available documents. Let me connect you with support, or try rephrasing your question."
                 else:
                     collected: list[str] = []
-                    for tok in stream_answer(rewritten, hits):
+                    for tok in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
                         collected.append(tok)
                         yield f"event: token\ndata: {json.dumps(tok)}\n\n"
                     answer = "".join(collected)

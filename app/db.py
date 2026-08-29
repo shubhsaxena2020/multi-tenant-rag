@@ -49,6 +49,10 @@ class Tenant(Base):
     # Per-tenant widget branding (issue #23): JSON blob {logo_url, header_title, accent, ...}.
     # Nullable text, default '{}'. Applied by the embeddable widget via CSS custom properties.
     branding: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    # PHASE D (#35): per-tenant custom system prompt / persona. Operator-trusted config (NOT
+    # end-user input), so it is the system's own instruction surface, not subject to the
+    # user-input injection filtering owned by the parallel P0/P1 security session. Empty = default.
+    system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
 class TenantKey(Base):
@@ -187,6 +191,7 @@ async def init_db() -> None:
             ("tenant_keys", "expires_at", "TIMESTAMP WITH TIME ZONE"),
             ("tenants", "chunk_quota", "INTEGER"),
             ("tenants", "branding", "TEXT"),
+            ("tenants", "system_prompt", "TEXT"),
         ]
         await _run_add_column_migrations(conn, migrations)
 
@@ -253,6 +258,7 @@ async def create_tenant(
     plan: str,
     allowed_groups: list[str] | None = None,
     branding: dict | None = None,
+    system_prompt: str = "",
     session: AsyncSession | None = None,
 ) -> dict:
     """Create a new tenant with initial API key. Returns tenant dict."""
@@ -268,6 +274,7 @@ async def create_tenant(
             chunk_count=0,
             allowed_groups=json.dumps(groups),
             branding=json.dumps(branding or {}),
+            system_prompt=system_prompt or "",
         )
         s.add(tenant)
         key = TenantKey(
@@ -289,6 +296,7 @@ async def create_tenant(
             "chunk_count": tenant.chunk_count,
             "allowed_groups": groups,
             "branding": _parse_json(tenant.branding, {}),
+            "system_prompt": tenant.system_prompt or "",
         }
 
 
@@ -441,6 +449,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
+                "system_prompt": t.system_prompt or "",
             }
     else:
         async with session as s:
@@ -462,6 +471,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "chunk_count": t.chunk_count,
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
+                "system_prompt": t.system_prompt or "",
             }
 
 
@@ -521,6 +531,21 @@ async def set_tenant_branding(tenant_id: str, branding: dict, session: AsyncSess
             update(Tenant)
             .where(Tenant.tenant_id == tenant_id)
             .values(branding=json.dumps(branding or {}))
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return (result.rowcount or 0) > 0
+
+
+async def set_tenant_system_prompt(tenant_id: str, system_prompt: str, session: AsyncSession | None = None) -> bool:
+    """PHASE D (#35): persist a tenant's persona/system prompt. Operator-trusted config (NOT
+    end-user input) — no injection filtering applied here; only operators set it via the
+    admin-gated endpoint. Empty string clears the persona. Returns True if the tenant exists."""
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(system_prompt=system_prompt or "")
         )
         result = await s.execute(stmt)
         await s.commit()

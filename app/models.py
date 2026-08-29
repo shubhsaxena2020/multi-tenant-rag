@@ -31,6 +31,14 @@ class TenantCreate(BaseModel):
             "properties. Server-side validated/sanitized before use."
         ),
     )
+    system_prompt: str | None = Field(
+        default=None,
+        description=(
+            "PHASE D (#35): per-tenant custom system prompt / persona (operator-trusted "
+            "config, NOT end-user input). Prepended as a real `system` message to generation; "
+            "empty/None = default generic grounding prompt."
+        ),
+    )
 
 
 class TenantOut(BaseModel):
@@ -42,6 +50,14 @@ class TenantOut(BaseModel):
     chunk_count: int = 0
     allowed_groups: list[str] = ["*"]
     branding: dict = {}
+    system_prompt: str = ""
+
+
+class TenantSystemPromptIn(BaseModel):
+    """PHASE D (#35): operator-set persona. Admin-only. It is OPERATOR-trusted config (not
+    end-user input), so it is NOT subject to the user-input injection filtering owned by the
+    parallel P0/P1 security session. Max length keeps the persisted blob bounded."""
+    system_prompt: str = Field(..., max_length=8000)
 
 
 class TenantBranding(BaseModel):
