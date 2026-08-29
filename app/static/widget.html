@@ -317,9 +317,30 @@ window.addEventListener("message", function (e) {
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (cfg) { if (cfg && cfg.branding) applyBranding(cfg.branding); })
         .catch(function () {});
+      // PHASE D (#31): replay prior conversation so a reload doesn't lose context.
+      if (sessionId) loadHistory(sessionId);
     }
   }
 });
+
+// Fetch and render stored multi-turn history for a session (issue #31). Historical bot
+// answers are shown without the feedback controls (those only apply to fresh answers).
+function loadHistory(sid) {
+  if (!tenant || !apiKey || !base) return;
+  fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(tenant) + "/session/" + encodeURIComponent(sid), {
+    method: "GET",
+    headers: { "Authorization": "Bearer " + apiKey },
+  })
+    .then(function (r) { return r.ok ? r.json() : { turns: [] }; })
+    .then(function (data) {
+      var turns = (data && data.turns) || [];
+      turns.forEach(function (t) {
+        if (t.role === "user") addMsg("user", t.text, null, { feedback: false });
+        else addMsg("bot", t.text || "", null, { feedback: false });
+      });
+    })
+    .catch(function () {});
+}
 parent.postMessage({ type: "rag:ready" }, "*");
 
 document.getElementById("form").onsubmit = async function (ev) {

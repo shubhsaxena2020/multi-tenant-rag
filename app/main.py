@@ -857,6 +857,21 @@ async def widget_config(tenant: str, auth: TenantDep):
     return WidgetConfigOut(tenant_id=auth.tenant_id, branding=auth.branding or {})
 
 
+@v1.get("/{tenant}/session/{session_id}", response_model=dict, status_code=status.HTTP_200_OK)
+async def session_history(tenant: str, session_id: str, auth: TenantDep, _: None = Depends(require_secret_key)):
+    """PHASE D (#31): return the stored multi-turn history for a session so the widget can
+    replay prior context after a reload. Tenant-scoped (key resolves tenant; path tenant must
+    match). Sessions are lazily created, so an unknown session returns empty turns (not 404)."""
+    if auth.tenant_id != tenant:
+        raise HTTPException(status_code=403, detail="tenant mismatch")
+    store = get_session_store()
+    turns = store.history(auth.tenant_id, session_id)
+    return {
+        "session_id": session_id,
+        "turns": [{"role": t.role, "text": t.text} for t in turns],
+    }
+
+
 @v1.patch("/{tenant}/branding", response_model=TenantOut, status_code=status.HTTP_200_OK)
 async def update_branding(tenant: str, body: TenantBranding, request: Request, _: None = Depends(require_admin)):
     """Set/update a tenant's widget branding (admin only). Sanitized server-side."""
