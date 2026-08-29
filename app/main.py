@@ -57,7 +57,8 @@ from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
 from .models import (
-    DocumentCatalogOut,
+    DocumentCatalogItem,
+    DocumentCatalogPage,
     DocumentCreate,
     DocumentOut,
     EvalReportOut,
@@ -641,7 +642,12 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
+    # Drop the Qdrant vectors first (tenant-scoped), then remove the catalog/registry row so
+    # the document disappears from GET /documents immediately (issue #12 accuracy fix).
     delete_document(auth.tenant_id, doc_id)
+    from .db import delete_registry_by_doc_id
+
+    await delete_registry_by_doc_id(auth.tenant_id, doc_id)
     await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
     return {"deleted": doc_id}
 
@@ -739,17 +745,34 @@ async def get_sitemap_job(tenant: str, job_id: str, auth: TenantDep, request: Re
     )
 
 
-@v1.get("/{tenant}/documents", response_model=list[DocumentCatalogOut])
-async def list_documents(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), limit: int = 200):
-    """Document catalog — a tenant sees exactly what is indexed for them (issue #7).
+@v1.get("/{tenant}/documents", response_model=DocumentCatalogPage)
+async def list_documents(
+    tenant: str,
+    auth: TenantDep,
+    request: Request,
+    _: None = Depends(require_secret_key),
+    limit: int = 200,
+    offset: int = 0,
+):
+    """Document catalog — a tenant sees exactly what is indexed for them (issue #7/#12).
 
     Tenant-scoped (backed by document_registry, filtered on tenant_id); never cross-tenant.
+    Returns a paginated page with the true `total` (independent of `limit`), so a client can
+    page through a large catalog and know how many documents exist.
     """
     rate_limit(request, auth.tenant_id)
-    from .db import list_documents as _list_documents
+    from .db import count_documents, list_documents as _list_documents
 
-    docs = await _list_documents(auth.tenant_id, limit=limit)
-    return [DocumentCatalogOut(**d) for d in docs]
+    limit = max(1, min(limit, 1000))
+    offset = max(0, offset)
+    rows = await _list_documents(auth.tenant_id, limit=limit, offset=offset)
+    total = await count_documents(auth.tenant_id)
+    return DocumentCatalogPage(
+        items=[DocumentCatalogItem(**d) for d in rows],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
 
 
 # ---------------- File upload (issue #10) ----------------

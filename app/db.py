@@ -508,12 +508,13 @@ async def get_registry_entry(tenant_id: str, doc_key: str, session: AsyncSession
 
 
 async def list_documents(
-    tenant_id: str, limit: int = 200, session: AsyncSession | None = None
+    tenant_id: str, limit: int = 200, offset: int = 0, session: AsyncSession | None = None
 ) -> list[dict]:
-    """Catalog: every document currently indexed for `tenant_id` (issue #7).
+    """Catalog: every document currently indexed for `tenant_id` (issue #7/#12).
 
     Backed by `document_registry` (issue #4), which is tenant-scoped by construction, so a
-    tenant only ever sees their own docs. Ordered most-recently-updated first.
+    tenant only ever sees their own docs. Ordered most-recently-updated first. `offset`
+    enables paging through large catalogs.
     """
     async with (session or get_session_maker())() as s:
         stmt = (
@@ -521,6 +522,7 @@ async def list_documents(
             .where(DocumentRegistry.tenant_id == tenant_id)
             .order_by(DocumentRegistry.updated_at.desc())
             .limit(limit)
+            .offset(offset)
         )
         rows = (await s.execute(stmt)).scalars().all()
         return [
@@ -537,6 +539,19 @@ async def list_documents(
             }
             for r in rows
         ]
+
+
+async def count_documents(tenant_id: str, session: AsyncSession | None = None) -> int:
+    """True number of documents indexed for `tenant_id` (independent of paging). Issue #12."""
+    async with (session or get_session_maker())() as s:
+        return int(
+            await s.scalar(
+                select(func.count(DocumentRegistry.doc_id)).where(
+                    DocumentRegistry.tenant_id == tenant_id
+                )
+            )
+            or 0
+        )
 
 
 async def upsert_registry_entry(

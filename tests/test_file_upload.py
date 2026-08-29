@@ -163,7 +163,7 @@ def test_reupload_same_file_replaces_not_duplicates(client):
     # Same file -> same doc_id (idempotent replace).
     assert d2 == d1, f"re-upload should reuse doc_id: {d1} != {d2}"
     # Catalog lists exactly one doc for this tenant (not two).
-    cat = client.get(f"{V}/acme/documents", headers=auth).json()
+    cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
     uploads = [d for d in cat if d["title"] == "guide.md"]
     assert len(uploads) == 1, f"re-upload duplicated: {uploads}"
 

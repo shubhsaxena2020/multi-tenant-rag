@@ -123,12 +123,15 @@ class DocumentOut(BaseModel):
     )
 
 
-# ---------- Sitemap onboarding (issue #7) ----------
-class DocumentCatalogOut(BaseModel):
-    """Catalog row: what a tenant has indexed (issue #7). Backed by document_registry."""
+# ---------- Sitemap onboarding / catalog (issue #7, #12) ----------
+class DocumentCatalogItem(BaseModel):
+    """One row in a tenant's index catalog (issue #12).
+
+    Exposes only tenant-relevant fields. The internal `doc_key` (registry stability key)
+    is intentionally NOT surfaced.
+    """
 
     doc_id: str
-    doc_key: str
     title: str
     content_type: str
     chunk_count: int
@@ -136,6 +139,15 @@ class DocumentCatalogOut(BaseModel):
     content_hash: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+
+
+class DocumentCatalogPage(BaseModel):
+    """Paginated catalog response (issue #12): items + true total + paging cursor."""
+
+    items: list[DocumentCatalogItem]
+    total: int
+    limit: int
+    offset: int
 
 
 class UploadOut(BaseModel):
