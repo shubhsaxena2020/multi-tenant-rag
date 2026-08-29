@@ -18,7 +18,7 @@ from .. import tenants
 from ..config import get_settings
 from ..embed import get_embedder
 from ..observability import get_logger
-from ..vector_store import upsert_chunks
+from ..vector_store import delete_document_chunks, upsert_chunks
 from .chunker import chunk_text
 
 log = get_logger("ingestion")
@@ -60,6 +60,9 @@ async def ingest_core(
     metadata: dict | None = None,
     on_progress: Callable[[int, int], None] | None = None,
     acl: list[str] | None = None,
+    doc_id: str | None = None,
+    source_url: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
     embedder = get_embedder()
     from ..conversation import detect_injection
@@ -90,8 +93,27 @@ async def ingest_core(
     await _enforce_quota(tenant_id, total)
     if total == 0:
         # Every chunk was poisoned (or the doc was empty) — nothing to index.
-        return {"doc_id": str(uuid.uuid4()), "title": title,
+        # Still record a catalog row so the tenant sees the (empty) doc with its
+        # quarantine outcome, and keep idempotency on re-ingest.
+        doc_id = doc_id or str(uuid.uuid4())
+        await _record_catalog(
+            tenant_id, doc_id, title, content_type, 0, source_url, source_hash, acl
+        )
+        return {"doc_id": doc_id, "title": title,
                 "chunk_count": 0, "quarantined_chunks": quarantined}
+
+    # PHASE B.1: idempotent re-ingestion. If a doc_id was supplied and already has chunks
+    # in the tenant's collection, remove the prior chunk set so the re-upsert REPLACES
+    # (not duplicates) the stale chunks. Cross-tenant scope is guaranteed by the combined
+    # (tenant_id, doc_id) filter inside delete_document_chunks.
+    if doc_id:
+        # Decrement the tenant chunk counter by the EXACT number of chunks we are about
+        # to replace, so re-ingestion is net-neutral on quota (otherwise every re-ingest
+        # would permanently inflate usage — a quota-accuracy bug).
+        prior = delete_document_chunks(tenant_id, doc_id)
+        if prior:
+            await tenants.increment_chunk_count(tenant_id, -prior)
+            # Keep the registry row (upsert_document below updates it in place).
 
     dense: list[list[float]] = []
     sparse: list[dict[int, float]] = []
@@ -105,7 +127,7 @@ async def ingest_core(
         if on_progress:
             on_progress(min(i + MAX_CHUNK_BATCH, total), total)
 
-    doc_id = str(uuid.uuid4())
+    doc_id = doc_id or str(uuid.uuid4())
     base = dict(metadata or {})
     from ..rbac import apply_acl_to_chunk_metadata
     base = apply_acl_to_chunk_metadata(base, acl)
@@ -115,24 +137,72 @@ async def ingest_core(
         base_metadata=base, content_type=content_type,
     )
     await tenants.increment_chunk_count(tenant_id, len(chunk_ids))
+    await _record_catalog(
+        tenant_id, doc_id, title, content_type, len(chunk_ids),
+        source_url, source_hash, acl,
+    )
     if on_progress:
         on_progress(total, total)
     return {"doc_id": doc_id, "title": title, "chunk_count": len(chunk_ids),
             "quarantined_chunks": quarantined}
 
 
+async def _record_catalog(
+    tenant_id: str,
+    doc_id: str,
+    title: str,
+    content_type: str,
+    chunk_count: int,
+    source_url: str | None,
+    source_hash: str | None,
+    acl: list[str] | None,
+) -> None:
+    from ..db import upsert_document
+
+    await upsert_document(
+        tenant_id=tenant_id,
+        doc_id=doc_id,
+        title=title,
+        content_type=content_type,
+        chunk_count=chunk_count,
+        source_url=source_url,
+        source_hash=source_hash,
+        acl=acl,
+    )
+
+
 async def ingest_text(
     tenant_id: str, title: str, text: str, content_type: str = "text",
     metadata: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
     acl: list[str] | None = None,
+    doc_id: str | None = None,
+    source_url: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
-    return await ingest_core(tenant_id, title, text, content_type, metadata, on_progress, acl)
+    return await ingest_core(
+        tenant_id, title, text, content_type, metadata, on_progress, acl,
+        doc_id=doc_id, source_url=source_url, source_hash=source_hash,
+    )
 
 
 async def ingest_url(
     tenant_id: str, url: str, title: str | None = None,
     metadata: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
     acl: list[str] | None = None,
+    doc_id: str | None = None,
+    source_hash: str | None = None,
 ) -> dict:
     body = fetch_url(url)
-    return await ingest_core(tenant_id, title or url, body, "html", metadata, on_progress, acl)
+    # PHASE B.1/B.2: idempotent re-crawl. If a source_hash was supplied (sitemap crawler
+    # derives one from the URL) and we already have a doc for it, reuse its doc_id so the
+    # re-crawl REPLACES the page in place instead of fanning out duplicate chunks.
+    if doc_id is None and source_hash:
+        from ..db import find_document_by_source_hash
+
+        existing = await find_document_by_source_hash(tenant_id, source_hash)
+        if existing:
+            doc_id = existing.get("doc_id")
+    return await ingest_core(
+        tenant_id, title or url, body, "html", metadata, on_progress, acl,
+        doc_id=doc_id, source_url=url, source_hash=source_hash,
+    )

@@ -58,9 +58,15 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
             ))
             progress_tasks.append(task)
 
+        # PHASE B.1: derive a source_hash from the URL so re-running the same URL job
+        # REPLACES the prior doc instead of duplicating it (mirrors the sitemap crawler).
+        import hashlib
+
+        src_hash = hashlib.sha256(payload["url"].encode()).hexdigest()
         result = await ingest_url(
             tenant_id, payload["url"], payload.get("title"),
-            metadata, on_progress=on_progress, acl=payload.get("acl")
+            metadata, on_progress=on_progress, acl=payload.get("acl"),
+            doc_id=payload.get("doc_id"), source_hash=src_hash,
         )
     else:
         def on_progress(done: int, total: int):

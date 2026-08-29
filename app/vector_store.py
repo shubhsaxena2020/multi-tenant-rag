@@ -120,7 +120,15 @@ def upsert_chunks(
     base_metadata: dict[str, Any],
     content_type: str,
 ) -> list[str]:
-    """Store chunks with dense+sparse vectors and encrypted text. Returns chunk ids."""
+    """Store chunks with dense+sparse vectors and encrypted text. Returns chunk ids.
+
+    PHASE B.1: each chunk carries a deterministic SHA-256 `content_hash` of its (decrypted)
+    text so re-ingestion is idempotent — callers upsert into the same `doc_id` and the
+    prior chunk set is removed first (see replace_document_chunks), so edits REPLACE stale
+    chunks instead of fanning out duplicates.
+    """
+    import hashlib
+
     client = get_client()
     name = ensure_collection(client)
     points: list[PointStruct] = []
@@ -128,6 +136,7 @@ def upsert_chunks(
     for i, (text, dvec, svec) in enumerate(zip(chunks, dense, sparse)):
         cid = str(uuid.uuid4())
         chunk_ids.append(cid)
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
         points.append(
             PointStruct(
                 id=cid,
@@ -139,6 +148,7 @@ def upsert_chunks(
                     "chunk_index": i,
                     "text": crypto.encrypt_text(tenant_id, text),
                     "content_type": content_type,
+                    "content_hash": content_hash,
                     **base_metadata,
                 },
             )
@@ -149,6 +159,41 @@ def upsert_chunks(
     if points:
         client.upsert(name, points=points)
     return chunk_ids
+
+
+def delete_document_chunks(tenant_id: str, doc_id: str) -> int:
+    """Delete all chunks for a (tenant_id, doc_id) pair. Returns number of points deleted.
+
+    Tenant-scoped (combined filter) so it can never touch another tenant's vectors. Used by
+    idempotent re-ingestion (PHASE B.1) to replace a document's chunks before re-upserting,
+    and by the quota-accuracy bookkeeping so re-ingest does not inflate tenant chunk usage.
+    """
+    client = get_client()
+    name = ensure_collection(client)
+    selector = Filter(
+        must=[
+            FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+            FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
+        ]
+    )
+    try:
+        client.delete(collection_name=name, points_selector=selector, wait=True)
+        # qdrant_client delete returns an UpdateResult whose .status reflects the ack;
+        # to get the true count we count points before deletion via a scroll.
+        return _count_points(name, selector)
+    except Exception:
+        return 0
+
+
+def _count_points(name: str, selector: Filter) -> int:
+    """Count points matching a filter (used to report real deleted counts)."""
+    client = get_client()
+    try:
+        ids, _ = client.scroll(collection_name=name, scroll_filter=selector, limit=10000,
+                               with_payload=False, with_vectors=False)
+        return len(ids)
+    except Exception:
+        return 0
 
 
 def delete_document(tenant_id: str, doc_id: str) -> int:

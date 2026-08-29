@@ -23,7 +23,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from . import jobs as job_store
 from . import tenants
 from .audit import append_audit, list_audit, verify_chain
-from .auth import generate_api_key, generate_publishable_key, get_tenant_from_header, require_admin, require_secret_key
+from .auth import (
+    generate_api_key,
+    generate_publishable_key,
+    get_tenant_from_header,
+    require_admin,
+    require_secret_key,
+)
 from .config import get_settings
 from .conversation import (
     assess_confidence,
@@ -35,6 +41,7 @@ from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
 from .models import (
+    DocumentCatalogOut,
     DocumentCreate,
     DocumentOut,
     EvalReportOut,
@@ -47,9 +54,12 @@ from .models import (
     QueryRequest,
     QueryResponse,
     RetrievedChunk,
+    SitemapIngestIn,
+    SitemapJobOut,
     TenantCreate,
     TenantKeysOut,
     TenantOut,
+    UploadOut,
 )
 from .observability import (
     INGEST_CHUNKS,
@@ -301,6 +311,32 @@ def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, defau
     return eff
 
 
+def _parse_json_field(raw: str | None) -> dict:
+    """Parse an optional JSON-string form field into a dict (empty dict if absent/invalid)."""
+    if not raw:
+        return {}
+    import json
+
+    try:
+        val = json.loads(raw)
+    except Exception:
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def _parse_acl_field(raw: str | None) -> list[str] | None:
+    """Parse an optional JSON-array form field into a list of groups (None if absent)."""
+    if not raw:
+        return None
+    import json
+
+    try:
+        val = json.loads(raw)
+    except Exception:
+        return None
+    return val if isinstance(val, list) else None
+
+
 # ---------------- Root (operability) routes ----------------
 @app.get("/health")
 def health():
@@ -468,7 +504,8 @@ async def create_document(tenant: str, body: DocumentCreate, request: Request, a
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
-    res = await ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=acl)
+    res = await ingest_text(auth.tenant_id, body.title, body.content, ct, meta, acl=acl,
+                            doc_id=body.doc_id)
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     log.info("document_ingested", extra={"tenant_id": auth.tenant_id, "chunk_count": res["chunk_count"]})
@@ -488,7 +525,8 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
     rate_limit(request, auth.tenant_id)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
-    res = await ingest_url(auth.tenant_id, body.url, body.title, meta, acl=acl)
+    res = await ingest_url(auth.tenant_id, body.url, body.title, meta, acl=acl,
+                           doc_id=body.doc_id)
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     await _audit_data_plane(
@@ -509,7 +547,8 @@ async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, reque
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
-    res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl)
+    res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl,
+                             doc_id=body.doc_id)
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     await _audit_data_plane(
@@ -599,13 +638,198 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
     return {"deleted": job_id}
 
 
+# ---------------- PHASE B.2: sitemap crawler (async job) ----------------
+@v1.post("/{tenant}/ingest/sitemap", response_model=SitemapJobOut, status_code=status.HTTP_202_ACCEPTED)
+async def create_sitemap_job(tenant: str, body: SitemapIngestIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """Onboard a client site by crawling its sitemap.xml. Returns a job_id to poll.
+
+    Respectful crawler: honors robots.txt (Allow/Disallow + Crawl-delay), caps
+    concurrency and total URLs, and reuses the SSRF-safe fetcher. Re-crawls are
+    idempotent (each URL is upserted under a stable source_hash), so re-running a
+    sitemap REPLACES changed pages instead of duplicating them (PHASE B.1).
+    """
+    rate_limit(request, auth.tenant_id)
+    from fastapi import status as _st
+
+    from .ratelimit import _limiter
+
+    s = get_settings()
+    allowed, retry = _limiter.hit(f"ingest:{auth.tenant_id}", limit=s.rate_ingest_jobs_per_min, window_min=1)
+    if not allowed:
+        raise HTTPException(
+            status_code=_st.HTTP_429_TOO_MANY_REQUESTS,
+            detail="ingest job rate limit exceeded (per tenant, per minute)",
+            headers={"Retry-After": str(retry)},
+        )
+    job_title = body.title or f"sitemap:{body.url}"
+    job_id = await job_store.create_job(auth.tenant_id, "sitemap", job_title)
+    INGEST_JOBS.labels(status="pending").inc()
+    meta = validate_metadata(body.metadata)
+    acl = _resolved_acl(body.acl, auth, default_to_public=True)
+    # Run the crawl in a detached background task (independent of the request).
+    import asyncio
+
+    async def _run():
+        await job_store.update_job(job_id, status="running", progress=0.05)
+        try:
+            from .ingestion.sitemap import crawl_sitemap
+
+            res = await crawl_sitemap(
+                auth.tenant_id, body.url,
+                max_urls=body.max_urls, concurrency=body.concurrency,
+                acl=acl, metadata=meta,
+                on_progress=lambda done, total: asyncio.create_task(
+                    job_store.update_job(job_id, progress=0.1 + 0.9 * (done / total))
+                ),
+            )
+            await job_store.update_job(
+                job_id, status="completed", progress=1.0,
+                result_doc_id=None,
+                total_chunks=res.urls_ingested,
+                done_chunks=res.urls_ingested,
+            )
+            # Persist crawl stats onto the job row via a small side-table update.
+            await _save_sitemap_stats(job_id, res)
+            INGEST_JOBS.labels(status="completed").inc()
+            log.info("sitemap_crawl_done",
+                     extra={"tenant_id": auth.tenant_id, "job_id": job_id,
+                            "ingested": res.urls_ingested, "failed": res.urls_failed})
+        except Exception as e:
+            safe_err = f"{type(e).__name__}: {str(e)[:200]}"
+            await job_store.update_job(job_id, status="failed", error=safe_err)
+            INGEST_JOBS.labels(status="failed").inc()
+            log.error("sitemap_crawl_failed",
+                      extra={"tenant_id": auth.tenant_id, "job_id": job_id, "error": safe_err})
+
+    asyncio.create_task(_run())
+    return SitemapJobOut(
+        job_id=job_id, tenant_id=auth.tenant_id, status="pending",
+        kind="sitemap", title=job_title,
+    )
+
+
+async def _save_sitemap_stats(job_id: str, res) -> None:
+    """Best-effort: stash crawl counters on the job row (reuses the error/title fields)."""
+    try:
+        from .jobs import update_job
+        # Encode crawl summary into the job title suffix (surfaced by GET /jobs).
+        # (The Job model has fixed columns; we record the summary in `error` only on
+        #  failure; on success we annotate via a dedicated stats JSON in title is overkill,
+        #  so we expose counts through get_job's extra fields below.)
+        summary = (f"discovered={res.urls_discovered} ingested={res.urls_ingested} "
+                   f"failed={res.urls_failed} skipped_robots={res.skipped_robots}")
+        await update_job(job_id, total_chunks=res.urls_ingested, done_chunks=res.urls_ingested,
+                         error=(summary if res.urls_failed else None))
+    except Exception:
+        pass
+
+
+@v1.get("/{tenant}/ingest/sitemap/{job_id}", response_model=SitemapJobOut)
+async def get_sitemap_job(tenant: str, job_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    rate_limit(request, auth.tenant_id)
+    j = await job_store.get_job(job_id, auth.tenant_id)
+    if j is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    # The crawl summary is carried in the `error` field on success (see _save_sitemap_stats).
+    summary = j.get("error") or ""
+    urls_ingested = j.get("total_chunks") or 0
+    return SitemapJobOut(
+        job_id=job_id, tenant_id=auth.tenant_id, status=j["status"],
+        kind="sitemap", progress=j["progress"],
+        total_chunks=j.get("total_chunks", 0), done_chunks=j.get("done_chunks", 0),
+        urls_ingested=urls_ingested,
+        urls_failed=(0 if not summary else 1),
+        error=(summary if "failed=" in summary and urls_ingested == 0 else None),
+        title=j.get("title"),
+    )
+
+
+# ---------------- PHASE B.3: file upload (PDF / Markdown / code / text) ----------------
+from fastapi import File, Form, UploadFile
+
+
+@v1.post("/{tenant}/documents/upload", response_model=UploadOut, status_code=status.HTTP_201_CREATED)
+async def upload_document(
+    tenant: str,
+    request: Request,
+    auth: TenantDep,
+    _: None = Depends(require_secret_key),
+    file: UploadFile = File(None),
+    title: str | None = Form(None),
+    content_type: str | None = Form(None),
+    metadata: str | None = Form(None),
+    acl: str | None = Form(None),
+):
+    """Upload a file (PDF / Markdown / HTML / code / text) and ingest it.
+
+    multipart/form-data: `file` (required), `title` (optional), `content_type` (optional,
+    auto-detected from extension otherwise), `metadata` (optional JSON object string),
+    `acl` (optional JSON array of groups). PDFs are parsed with pypdf (clear error if
+    missing). Returns the indexed doc_id.
+    """
+    rate_limit(request, auth.tenant_id)
+    from .ingestion.files import detect_content_type, extract_text
+
+    upload = file
+    if upload is None:
+        raise HTTPException(status_code=422, detail="multipart field 'file' is required")
+    fname = getattr(upload, "filename", None) or "upload"
+    data = await upload.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="uploaded file is empty")
+    ctype = detect_content_type(fname, content_type)
+    try:
+        text = extract_text(fname, data, ctype)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    validate_content(text)
+    meta = validate_metadata(_parse_json_field(metadata))
+    resolved_acl = _resolved_acl(_parse_acl_field(acl), auth, default_to_public=True)
+    doc_title = title or fname
+    res = await ingest_text(auth.tenant_id, doc_title, text, ctype, meta, acl=resolved_acl)
+    INGEST_CHUNKS.inc(res["chunk_count"])
+    INGEST_JOBS.labels(status="success").inc()
+    await _audit_data_plane(
+        "tenant.ingest", auth.tenant_id, target=res["doc_id"],
+        meta={"title": doc_title, "chunks": res["chunk_count"],
+              "quarantined": res["quarantined_chunks"], "kind": "upload",
+              "content_type": ctype},
+    )
+    return UploadOut(
+        doc_id=res["doc_id"], title=doc_title, chunk_count=res["chunk_count"],
+        quarantined_chunks=res["quarantined_chunks"], content_type=ctype,
+    )
+
+
 # ---------------- Document management ----------------
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
-    delete_document(auth.tenant_id, doc_id)
+    # Remove the catalog row first so we can read its chunk_count for accurate quota
+    # bookkeeping (the previous delete left chunk_count stale — a quota-accuracy bug).
+    from .db import delete_document_row, get_document
+
+    row = await get_document(doc_id, auth.tenant_id)
+    deleted_rows = await delete_document_row(doc_id, auth.tenant_id)
+    delete_document(auth.tenant_id, doc_id)  # drops the Qdrant vectors (tenant-scoped)
+    if row:
+        # Decrement the tenant chunk counter by the exact number we removed.
+        await tenants.increment_chunk_count(auth.tenant_id, -row["chunk_count"])
     await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
-    return {"deleted": doc_id}
+    return {"deleted": doc_id, "catalog_rows": deleted_rows}
+
+
+@v1.get("/{tenant}/documents", response_model=list[DocumentCatalogOut])
+async def list_documents(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), limit: int = 200):
+    """PHASE B.4: document catalog — a tenant sees exactly what is indexed for them.
+
+    Tenant-scoped; never cross-tenant (the registry query filters on tenant_id).
+    """
+    rate_limit(request, auth.tenant_id)
+    from .db import list_documents as _list_documents
+
+    docs = await _list_documents(auth.tenant_id, limit=limit)
+    return [DocumentCatalogOut(**d) for d in docs]
 
 
 # ---------------- Query ----------------

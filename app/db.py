@@ -79,6 +79,30 @@ class Job(Base):
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
+class Document(Base):
+    """Per-tenant document catalog (PHASE B.4).
+
+    Records every ingested document so a tenant can list what is indexed (GET
+    /{tenant}/documents) and so ingestion can be idempotent (PHASE B.1): a re-ingest
+    of the same `doc_id` (or same `source_url`) replaces the prior chunks instead of
+    duplicating them. `source_hash` lets a crawler detect "already indexed, unchanged".
+    """
+
+    __tablename__ = "documents"
+
+    doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Optional provenance for deduplication (sitemap recrawl / re-ingest idempotency):
+    source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    acl: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 _engine: AsyncEngine | None = None
 _session_maker: async_sessionmaker[AsyncSession] | None = None
 
@@ -506,3 +530,132 @@ async def requeue_orphaned_jobs(session: AsyncSession | None = None) -> int:
         result = await s.execute(stmt)
         await s.commit()
         return result.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Document catalog (PHASE B.1 + B.4) — idempotent ingestion + listing
+# ---------------------------------------------------------------------------
+
+
+async def upsert_document(
+    tenant_id: str,
+    doc_id: str,
+    title: str,
+    content_type: str,
+    chunk_count: int,
+    source_url: str | None = None,
+    source_hash: str | None = None,
+    acl: list[str] | None = None,
+    session: AsyncSession | None = None,
+) -> None:
+    """Insert or update a document catalog row (idempotent on doc_id).
+
+    On update we keep the original created_at so the catalog reflects first-seen time.
+    """
+    now = datetime.now(UTC)
+    acl_json = json.dumps(acl or [])
+    async with (session or get_session_maker())() as s:
+        existing = await s.get(Document, doc_id)
+        if existing is None:
+            s.add(
+                Document(
+                    doc_id=doc_id,
+                    tenant_id=tenant_id,
+                    title=title,
+                    content_type=content_type,
+                    chunk_count=chunk_count,
+                    source_url=source_url,
+                    source_hash=source_hash,
+                    acl=acl_json,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        else:
+            existing.title = title
+            existing.content_type = content_type
+            existing.chunk_count = chunk_count
+            existing.source_url = source_url
+            existing.source_hash = source_hash
+            existing.acl = acl_json
+            existing.updated_at = now
+        await s.commit()
+
+
+async def get_document(doc_id: str, tenant_id: str, session: AsyncSession | None = None) -> dict | None:
+    async with (session or get_session_maker())() as s:
+        stmt = select(Document).where(
+            Document.doc_id == doc_id, Document.tenant_id == tenant_id
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+        return _document_row_to_dict(row)
+
+
+async def find_document_by_source_hash(
+    tenant_id: str, source_hash: str, session: AsyncSession | None = None
+) -> dict | None:
+    """PHASE B.1: find an existing doc for the same source so a re-crawl can replace it."""
+    if not source_hash:
+        return None
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(Document)
+            .where(Document.tenant_id == tenant_id, Document.source_hash == source_hash)
+            .order_by(Document.updated_at.desc())
+            .limit(1)
+        )
+        row = (await s.execute(stmt)).scalar_one_or_none()
+        return _document_row_to_dict(row) if row else None
+
+
+async def list_documents(
+    tenant_id: str, limit: int = 200, session: AsyncSession | None = None
+) -> list[dict]:
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            select(Document)
+            .where(Document.tenant_id == tenant_id)
+            .order_by(Document.updated_at.desc())
+            .limit(limit)
+        )
+        return [_document_row_to_dict(r) for r in (await s.execute(stmt)).scalars().all()]
+
+
+async def delete_document_row(
+    doc_id: str, tenant_id: str, session: AsyncSession | None = None
+) -> int:
+    """Remove the catalog row for a document. Returns rows deleted (0 or 1)."""
+    async with (session or get_session_maker())() as s:
+        n = await s.scalar(
+            select(func.count(Document.doc_id)).where(
+                Document.doc_id == doc_id, Document.tenant_id == tenant_id
+            )
+        )
+        await s.execute(
+            delete(Document).where(
+                Document.doc_id == doc_id, Document.tenant_id == tenant_id
+            )
+        )
+        await s.commit()
+        return n or 0
+
+
+def _document_row_to_dict(row: Document) -> dict:
+    try:
+        acl = json.loads(row.acl) if row.acl else []
+    except Exception:
+        acl = []
+    return {
+        "doc_id": row.doc_id,
+        "tenant_id": row.tenant_id,
+        "title": row.title,
+        "content_type": row.content_type,
+        "chunk_count": row.chunk_count,
+        "source_url": row.source_url,
+        "source_hash": row.source_hash,
+        "acl": acl,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }

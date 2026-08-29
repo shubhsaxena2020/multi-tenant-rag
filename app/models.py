@@ -61,6 +61,12 @@ class DocumentCreate(BaseModel):
         default=None,
         description="Optional sub-user group ids allowed to see this doc (document-level RBAC).",
     )
+    # PHASE B.1: idempotency key. Re-ingesting the same doc_id REPLACES the prior
+    # chunk set (never duplicates). Lets a client update a document in place.
+    doc_id: str | None = Field(
+        default=None,
+        description="Optional stable id; re-ingesting the same doc_id replaces its chunks (idempotent).",
+    )
 
 
 class IngestUrl(BaseModel):
@@ -69,6 +75,10 @@ class IngestUrl(BaseModel):
     content_type: str = "html"
     metadata: dict[str, Any] = Field(default_factory=dict)
     acl: list[str] | None = None
+    doc_id: str | None = Field(
+        default=None,
+        description="Optional stable id; re-ingesting the same doc_id replaces its chunks (idempotent).",
+    )
 
 
 class IngestText(BaseModel):
@@ -77,6 +87,10 @@ class IngestText(BaseModel):
     content_type: str = "text"
     metadata: dict[str, Any] = Field(default_factory=dict)
     acl: list[str] | None = None
+    doc_id: str | None = Field(
+        default=None,
+        description="Optional stable id; re-ingesting the same doc_id replaces its chunks (idempotent).",
+    )
 
 
 class DocumentOut(BaseModel):
@@ -86,6 +100,54 @@ class DocumentOut(BaseModel):
     quarantined_chunks: int = 0  # ingest-time injection drops (poisoned chunks never indexed)
     content_type: str
     metadata: dict[str, Any]
+
+
+# ---------- PHASE B: document catalog + ingestion sources ----------
+class DocumentCatalogOut(BaseModel):
+    """Catalog row: what a tenant has indexed (PHASE B.4)."""
+    doc_id: str
+    title: str
+    content_type: str
+    chunk_count: int
+    source_url: str | None = None
+    source_hash: str | None = None
+    acl: list[str] = []
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SitemapIngestIn(BaseModel):
+    url: str = Field(..., min_length=1)
+    max_urls: int = Field(default=100, ge=1, le=2000)
+    concurrency: int = Field(default=4, ge=1, le=8)
+    title: str | None = None
+    content_type: str = "html"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    acl: list[str] | None = None
+
+
+class SitemapJobOut(BaseModel):
+    job_id: str
+    tenant_id: str
+    status: str
+    kind: str = "sitemap"
+    progress: float = 0.0
+    total_chunks: int = 0
+    done_chunks: int = 0
+    urls_discovered: int = 0
+    urls_ingested: int = 0
+    urls_failed: int = 0
+    skipped_robots: int = 0
+    error: str | None = None
+    title: str | None = None
+
+
+class UploadOut(BaseModel):
+    doc_id: str
+    title: str
+    chunk_count: int
+    quarantined_chunks: int = 0
+    content_type: str
 
 
 # ---------- Ingestion jobs ----------
