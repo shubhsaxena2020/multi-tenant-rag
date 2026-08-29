@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>RAG Service — Admin Console</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+         background: #0e1117; color: #e6edf3; }
+  header { padding: 16px 20px; background: #161b22; border-bottom: 1px solid #30363d; }
+  header h1 { margin: 0; font-size: 17px; }
+  header .sub { color: #8b949e; font-size: 12px; margin-top: 4px; }
+  .wrap { padding: 20px; max-width: 1100px; margin: 0 auto; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+  input, button, select { background: #0e1117; color: #e6edf3; border: 1px solid #30363d;
+        border-radius: 6px; padding: 8px 10px; font-size: 13px; }
+  input { min-width: 320px; font-family: ui-monospace, monospace; }
+  button { cursor: pointer; background: #21262d; }
+  button:hover { border-color: #58a6ff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
+  .card h3 { margin: 0 0 8px; font-size: 14px; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 12px; }
+  .kv b { color: #8b949e; font-weight: 500; }
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 11px;
+          background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb55; }
+  .err { color: #ff7b72; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid #21262d; }
+  th { color: #8b949e; font-weight: 500; }
+  .muted { color: #8b949e; }
+  a { color: #58a6ff; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: #8b949e; }
+  pre { white-space: pre-wrap; word-break: break-word; background: #0e1117; border: 1px solid #30363d;
+        border-radius: 6px; padding: 10px; max-height: 240px; overflow: auto; font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RAG Service — Admin Console</h1>
+  <div class="sub">Operator single-view: tenant management, document lists, and widget config. No curl required. The Admin-Key stays in your browser only.</div>
+</header>
+<div class="wrap">
+  <div class="bar">
+    <input id="adminKey" placeholder="Admin-Key" type="password" autocomplete="off" />
+    <button id="load">Load console</button>
+    <button id="newTenantBtn">+ New tenant</button>
+    <span id="status" class="muted"></span>
+  </div>
+  <div id="fleet" class="card" style="margin-bottom:16px; display:none">
+    <h3>Fleet summary</h3>
+    <div id="fleetBody" class="kv"></div>
+  </div>
+  <div id="tenants" class="grid"></div>
+</div>
+
+<script>
+const API = window.location.origin + "/api/v1";
+const $ = (id) => document.getElementById(id);
+
+function authHeaders() {
+  const k = $("adminKey").value.trim();
+  return { "Admin-Key": k, "Authorization": "Bearer " + k };
+}
+function status(msg, isErr) {
+  const s = $("status"); s.textContent = msg; s.className = isErr ? "err" : "muted";
+}
+async function api(path) {
+  const r = await fetch(API + path, { headers: authHeaders() });
+  if (!r.ok) throw new Error(path + " -> " + r.status + " " + (await r.text()).slice(0, 160));
+  return r.json();
+}
+
+function pill(t) { return '<span class="pill">' + (t || "?") + "</span>"; }
+
+async function loadTenant(t) {
+  const tid = t.tenant_id;
+  const card = document.createElement("div");
+  card.className = "card";
+  try {
+    const [docs, an, tok, gaps] = await Promise.all([
+      api(`/${tid}/documents`).catch(e => ({ error: e.message })),
+      api(`/admin/analytics/${tid}?days=30`).catch(e => ({ error: e.message })),
+      api(`/admin/token-usage/${tid}?days=30`).catch(e => ({ error: e.message })),
+      api(`/admin/knowledge-gaps/${tid}`).catch(e => ({ error: e.message })),
+    ]);
+    const u = (an && an.usage) || {};
+    const fb = (an && an.feedback) || {};
+    const ld = (an && an.leads) || {};
+    const docList = (docs && docs.items) || [];
+    const branding = (t.branding && Object.keys(t.branding).length) ? t.branding : {};
+    card.innerHTML = `
+      <h3>${t.name || tid} ${pill(t.plan)}</h3>
+      <div class="kv">
+        <b>tenant_id</b><span><code>${tid}</code></span>
+        <b>queries (30d)</b><span>${u.queries ?? "-"}</span>
+        <b>docs</b><span>${docList.length}</span>
+        <b>feedback</b><span>▲ ${fb.up ?? 0} / ▼ ${fb.down ?? 0}</span>
+        <b>leads</b><span>${ld.total ?? 0}</span>
+        <b>knowledge gaps</b><span>${gaps && gaps.count != null ? gaps.count : (gaps && gaps.error ? gaps.error : "-")}</span>
+        <b>tokens</b><span>${tok && tok.total_tokens != null ? tok.total_tokens + (tok.estimated_rows ? " (est)" : "") : "-"}</span>
+      </div>
+      <details><summary>widget config / branding</summary>
+        <pre>${JSON.stringify(branding, null, 2)}</pre></details>
+      <details><summary>documents</summary>
+        <table><thead><tr><th>title</th><th>chunks</th><th>id</th></tr></thead><tbody>
+        ${docList.map(d => `<tr><td>${d.title || ""}</td><td>${d.chunk_count ?? ""}</td><td><code>${(d.doc_id||"").slice(0,8)}</code></td></tr>`).join("")}
+        ${docList.length ? "" : '<tr><td colspan="3" class="muted">none ingested</td></tr>'}
+        </tbody></table></details>
+      <details><summary>analytics JSON</summary><pre>${JSON.stringify(an, null, 2)}</pre></details>
+    `;
+  } catch (e) {
+    card.innerHTML = `<h3>${t.name || tid}</h3><div class="err">${e.message}</div>`;
+  }
+  $("tenants").appendChild(card);
+}
+
+async function load() {
+  const k = $("adminKey").value.trim();
+  if (!k) { status("Enter the Admin-Key", true); return; }
+  status("loading…");
+  $("tenants").innerHTML = ""; $("fleet").style.display = "none";
+  try {
+    const [tenants, summary] = await Promise.all([
+      api(`/tenants`), api(`/admin/summary?days=30`),
+    ]);
+    if (summary && summary.totals) {
+      const tt = summary.totals;
+      $("fleetBody").innerHTML = `
+        <b>tenants</b><span>${summary.tenant_count}</span>
+        <b>queries</b><span>${tt.queries}</span>
+        <b>docs ingested</b><span>${tt.docs_ingested}</span>
+        <b>feedback ▲/▼</b><span>${tt.feedback_up} / ${tt.feedback_down}</span>
+        <b>leads</b><span>${tt.leads}</span>
+        <b>knowledge gaps</b><span>${tt.knowledge_gaps}</span>
+        <b>tokens</b><span>${summary.tokens ? summary.tokens.total_tokens : "-"}</span>`;
+      $("fleet").style.display = "block";
+    }
+    for (const t of tenants) await loadTenant(t);
+    status(tenants.length + " tenant(s) loaded");
+  } catch (e) {
+    status(e.message, true);
+  }
+}
+
+$("load").onclick = load;
+$("newTenantBtn").onclick = async () => {
+  const name = prompt("New tenant name:");
+  if (!name) return;
+  try {
+    const r = await fetch(API + `/tenants`, {
+      method: "POST", headers: authHeaders(),
+      body: JSON.stringify({ name }),
+    });
+    const t = await r.json();
+    if (!r.ok) throw new Error(JSON.stringify(t));
+    alert("Created " + t.tenant_id + "\nsecret key: " + t.api_key);
+    load();
+  } catch (e) { status("create failed: " + e.message, true); }
+};
+</script>
+</body>
+</html>
