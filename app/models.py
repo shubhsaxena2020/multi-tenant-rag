@@ -44,7 +44,7 @@ class TenantCreate(BaseModel):
 class TenantOut(BaseModel):
     tenant_id: str
     name: str
-    api_key: str
+    api_key: str | None = None
     plan: str
     created_at: datetime
     chunk_count: int = 0

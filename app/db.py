@@ -192,6 +192,7 @@ async def init_db() -> None:
             ("tenants", "chunk_quota", "INTEGER"),
             ("tenants", "branding", "TEXT"),
             ("tenants", "system_prompt", "TEXT"),
+            ("tenants", "allowed_groups", "TEXT"),
         ]
         await _run_add_column_migrations(conn, migrations)
 
@@ -483,13 +484,27 @@ async def list_tenants(session: AsyncSession | None = None) -> list[dict]:
             {
                 "tenant_id": t.tenant_id,
                 "name": t.name,
-                "api_key_prefix": t.api_key_prefix,
+                "api_key": t.api_key_prefix,
                 "plan": t.plan,
                 "created_at": t.created_at,
                 "chunk_count": t.chunk_count,
+                "branding": _json_loads_or(t.branding, {}),
+                "system_prompt": t.system_prompt or "",
+                "allowed_groups": _json_loads_or(t.allowed_groups, ["*"]),
             }
             for t in result.scalars().all()
         ]
+
+
+def _json_loads_or(value, default):
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except Exception:
+        return default
 
 
 async def increment_chunk_count(tenant_id: str, n: int, session: AsyncSession | None = None) -> None:

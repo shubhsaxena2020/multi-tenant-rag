@@ -145,3 +145,71 @@ async def get_analytics_csv_rows(tenant_id: str, *, days: int = 30) -> list[dict
             "handoff_capture_rate": cap_rate,
         })
     return rows
+
+
+async def get_fleet_summary(*, days: int = 30) -> dict:
+    """PHASE E (#15): fleet-wide summary analytics across all tenants. Combines per-tenant
+    usage, feedback, leads, knowledge gaps, and token/cost into one operator rollup. Reads the
+    existing per-tenant aggregates + the fleet token function; no new storage.
+    """
+    from .db import list_tenants
+    from .usage import get_usage_summary
+    from .feedback import get_feedback_summary
+    from .leads import get_lead_summary
+    from .knowledge_gaps import count_knowledge_gaps
+    from .token_usage import get_fleet_token_usage
+
+    tenants = await list_tenants()
+    per_tenant = []
+    totals = {
+        "queries": 0, "docs_ingested": 0, "chunks_ingested": 0, "eval_runs": 0,
+        "feedback_up": 0, "feedback_down": 0, "leads": 0, "knowledge_gaps": 0,
+    }
+    for t in tenants:
+        tid = t["tenant_id"]
+        # Each source is fault-isolated: a failure in one must not blank the others.
+        try:
+            usage = await get_usage_summary(tid, days=days)
+        except Exception:  # noqa: BLE001
+            usage = None
+        try:
+            fb = await get_feedback_summary(tid)
+        except Exception:  # noqa: BLE001
+            fb = {"up": 0, "down": 0}
+        try:
+            ld = await get_lead_summary(tid)
+        except Exception:  # noqa: BLE001
+            ld = {"total": 0}
+        try:
+            gaps = await count_knowledge_gaps(tid)
+        except Exception:  # noqa: BLE001
+            gaps = 0
+        per_tenant.append({
+            "tenant_id": tid,
+            "name": t.get("name"),
+            "plan": t.get("plan"),
+            "queries": usage.queries if usage else 0,
+            "docs_ingested": usage.docs_ingested if usage else 0,
+            "chunks_ingested": usage.chunks_ingested if usage else 0,
+            "feedback_up": fb.get("up", 0),
+            "feedback_down": fb.get("down", 0),
+            "leads": ld.get("total", 0),
+            "knowledge_gaps": gaps,
+        })
+        totals["queries"] += usage.queries if usage else 0
+        totals["docs_ingested"] += usage.docs_ingested if usage else 0
+        totals["chunks_ingested"] += usage.chunks_ingested if usage else 0
+        totals["eval_runs"] += usage.eval_runs if usage else 0
+        totals["feedback_up"] += fb.get("up", 0)
+        totals["feedback_down"] += fb.get("down", 0)
+        totals["leads"] += ld.get("total", 0)
+        totals["knowledge_gaps"] += gaps
+
+    tokens = await get_fleet_token_usage(days=days)
+    return {
+        "tenant_count": len(tenants),
+        "window_days": days,
+        "totals": totals,
+        "tokens": tokens,
+        "tenants": per_tenant,
+    }

@@ -95,6 +95,11 @@ async def list_feedback(tenant_id: str, *, limit: int = 100, rating: str | None 
 async def get_feedback_summary(tenant_id: str) -> dict:
     session_maker = get_session_maker()
     async with session_maker() as session:
+        # Ensure the table exists even before the first rating is recorded (no such table guard).
+        await session.execute(text("CREATE TABLE IF NOT EXISTS feedback ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT NOT NULL, session_id TEXT, "
+            "message_id TEXT, rating TEXT NOT NULL, comment TEXT, question TEXT, answer TEXT, "
+            "ts TIMESTAMP WITH TIME ZONE NOT NULL)"))
         rows = (await session.execute(text("""
             SELECT rating, COUNT(*) FROM feedback WHERE tenant_id = :tenant_id GROUP BY rating
         """), {"tenant_id": tenant_id})).fetchall()

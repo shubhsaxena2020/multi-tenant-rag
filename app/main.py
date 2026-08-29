@@ -103,7 +103,7 @@ from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .leads import get_lead_summary, list_leads, save_lead
 from .knowledge_gaps import list_knowledge_gaps, record_knowledge_gap, record_knowledge_gap_bg, count_knowledge_gaps
 from .token_usage import get_token_usage, get_fleet_token_usage, record_token_usage, record_token_usage_bg
-from .analytics import get_analytics_csv_rows, get_tenant_analytics
+from .analytics import get_analytics_csv_rows, get_tenant_analytics, get_fleet_summary
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -425,6 +425,21 @@ def widget_demo():
     return HTMLResponse(body, media_type="text/html")
 
 
+@app.get("/admin/console")
+def admin_console_page():
+    """Lightweight operator console — a real HTML page (no raw curl) for tenant management,
+    per-tenant document lists, and widget config. The operator pastes the Admin-Key in the
+    browser; it is sent only as the Admin-Key header to the API. The page itself is unauthenticated
+    (it renders an input); every data call behind it is Admin-Key gated and fail-closed."""
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "admin.html"
+    if not p.exists():
+        return HTMLResponse("<h1>Admin console not found</h1>", status_code=404)
+    body = p.read_text(encoding="utf-8")
+    return HTMLResponse(body, media_type="text/html")
+
+
 @app.get("/doc/{tenant}/{doc_id}")
 def document_viewer(tenant: str, doc_id: str):
     """Hosted source viewer for citation deep-links (issue #6).
@@ -714,6 +729,15 @@ async def admin_analytics(tenant: str, _: None = Depends(require_admin), days: i
     return await get_tenant_analytics(tenant, days=days)
 
 
+# ---------------- Admin: fleet-wide summary analytics (PHASE E #15) ----------------
+@app.get("/admin/summary", response_model=dict)
+async def admin_summary(_: None = Depends(require_admin), days: int = 30):
+    """Operator-only fleet-wide summary analytics (issue #15): one call rolls up per-tenant
+    usage, feedback, leads, knowledge gaps, and token/cost across every tenant. Fail-closed
+    behind Admin-Key."""
+    return await get_fleet_summary(days=days)
+
+
 # ---------------- Admin: tenants ----------------
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
@@ -744,8 +768,9 @@ async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(
 async def list_tenants(_: None = Depends(require_admin)):
     return [
         TenantOut(
-            tenant_id=t.tenant_id, name=t.name, api_key=f"{t.api_key_prefix}...",
+            tenant_id=t.tenant_id, name=t.name, api_key=f"{t.api_key}...",
             plan=t.plan, created_at=t.created_at, chunk_count=t.chunk_count,
+            branding=t.branding or {},
         )
         for t in await tenants.list_tenants()
     ]
