@@ -38,3 +38,31 @@ def validate_content_type(content_type: str) -> str:
     if ct not in ALLOWED_CONTENT_TYPES:
         _fail(f"content_type must be one of {sorted(ALLOWED_CONTENT_TYPES)}")
     return ct
+
+
+def parse_json_field(raw: str | None) -> dict:
+    """Parse an optional JSON-string form field into a dict (empty dict if absent/invalid)."""
+    if not raw:
+        return {}
+    import json
+
+    try:
+        val = json.loads(raw)
+    except Exception:
+        return {}
+    return val if isinstance(val, dict) else {}
+
+
+def parse_acl_field(raw: str | None) -> list[str] | None:
+    """Parse an optional JSON-array form field into a list of groups (None if absent)."""
+    if raw is None:
+        return None
+    import json
+
+    try:
+        val = json.loads(raw)
+    except Exception:
+        raise HTTPException(status_code=422, detail="acl must be a JSON array of strings")
+    if not isinstance(val, list) or not all(isinstance(g, str) for g in val):
+        raise HTTPException(status_code=422, detail="acl must be a JSON array of strings")
+    return val

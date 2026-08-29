@@ -78,6 +78,7 @@ from .models import (
     TenantCreate,
     TenantKeysOut,
     TenantOut,
+    UploadOut,
 )
 from .observability import (
     INGEST_CHUNKS,
@@ -100,6 +101,8 @@ from .validation import (
     validate_content,
     validate_content_type,
     validate_metadata,
+    parse_acl_field,
+    parse_json_field,
 )
 from .vector_store import (
     delete_document,
@@ -747,6 +750,71 @@ async def list_documents(tenant: str, auth: TenantDep, request: Request, _: None
 
     docs = await _list_documents(auth.tenant_id, limit=limit)
     return [DocumentCatalogOut(**d) for d in docs]
+
+
+# ---------------- File upload (issue #10) ----------------
+from fastapi import File, Form, UploadFile
+
+
+@v1.post("/{tenant}/documents/upload", response_model=UploadOut, status_code=status.HTTP_201_CREATED)
+async def upload_document(
+    tenant: str,
+    request: Request,
+    auth: TenantDep,
+    _: None = Depends(require_secret_key),
+    file: UploadFile = File(None),
+    title: str | None = Form(None),
+    content_type: str | None = Form(None),
+    metadata: str | None = Form(None),
+    acl: str | None = Form(None),
+):
+    """Upload a file (PDF / Markdown / HTML / code / text) and ingest it (issue #10).
+
+    multipart/form-data: `file` (required), `title` (optional), `content_type` (optional,
+    auto-detected from extension/MIME), `metadata` (optional JSON object string),
+    `acl` (optional JSON array of groups). PDFs use pypdf; DOCX uses python-docx (clear 400
+    if the parser is missing). Re-uploading the same file REPLACES prior chunks (issue #4
+    per-file doc_key), so it never duplicates.
+    """
+    rate_limit(request, auth.tenant_id)
+    from .ingestion.files import detect_content_type, extract_text
+
+    upload = file
+    if upload is None:
+        raise HTTPException(status_code=422, detail="multipart field 'file' is required")
+    fname = getattr(upload, "filename", None) or "upload"
+    data = await upload.read()
+    if not data:
+        raise HTTPException(status_code=422, detail="uploaded file is empty")
+    routing_ct = detect_content_type(fname, content_type)
+    try:
+        text, pipeline_ct = extract_text(fname, data, routing_ct)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    validate_content(text)
+    meta = validate_metadata(parse_json_field(metadata))
+    resolved_acl = _resolved_acl(parse_acl_field(acl), auth, default_to_public=True)
+    doc_title = title or fname
+    # Stable per-file doc_key (issue #4): same filename+content -> replaced, not duplicated.
+    import hashlib
+
+    file_key = hashlib.sha256(f"{fname}:{text}".encode("utf-8")).hexdigest()
+    doc_key = f"file:{file_key}"
+    res = await ingest_text(
+        auth.tenant_id, doc_title, text, pipeline_ct, meta, acl=resolved_acl, doc_key=doc_key,
+    )
+    INGEST_CHUNKS.inc(res["chunk_count"])
+    INGEST_JOBS.labels(status="success").inc()
+    await _audit_data_plane(
+        "tenant.ingest", auth.tenant_id, target=res["doc_id"],
+        meta={"title": doc_title, "chunks": res["chunk_count"],
+              "quarantined": res["quarantined_chunks"], "kind": "upload",
+              "content_type": pipeline_ct},
+    )
+    return UploadOut(
+        doc_id=res["doc_id"], title=doc_title, chunk_count=res["chunk_count"],
+        quarantined_chunks=res["quarantined_chunks"], content_type=pipeline_ct,
+    )
 
 
 # ---------------- Query ----------------

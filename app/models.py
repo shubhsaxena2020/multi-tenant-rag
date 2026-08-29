@@ -138,6 +138,14 @@ class DocumentCatalogOut(BaseModel):
     updated_at: str | None = None
 
 
+class UploadOut(BaseModel):
+    doc_id: str
+    title: str
+    chunk_count: int
+    quarantined_chunks: int = 0
+    content_type: str
+
+
 class SitemapIngestIn(BaseModel):
     url: str = Field(..., min_length=1)
     max_urls: int = Field(default=100, ge=1, le=2000)
