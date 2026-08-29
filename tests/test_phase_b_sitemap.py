@@ -157,3 +157,183 @@ def test_sitemap_respects_robots_disallow(client, monkeypatch):
     # No field for skipped_robots on the job out; verify only page A made it.
     cat = client.get(f"{V}/acme/documents", headers=auth).json()
     assert len(cat) == 1 and cat[0]["title"] == "https://example.com/a", cat
+
+
+# --------------------------------------------------------------------------
+# v10.11 — sitemap auto-discovery (onboard by root domain, not exact URL)
+# --------------------------------------------------------------------------
+
+import asyncio as _asyncio
+
+
+def asyncio_run(coro):
+    return _asyncio.run(coro)
+
+
+_CHILD_SITEMAP = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    "<url><loc>https://example.com/b</loc></url>"
+    "</urlset>"
+)
+_INDEX = (
+    '<?xml version="1.0" encoding="UTF-8"?>'
+    '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+    "<sitemap><loc>https://example.com/child-sitemap.xml</loc></sitemap>"
+    "</sitemapindex>"
+)
+
+
+def test_resolve_sitemap_honors_robots_hint():
+    """resolve_sitemap_url must prefer a robots.txt `Sitemap:` hint over /sitemap.xml."""
+    import app.ingestion.sitemap as sm
+    import app.ingestion.ssrf as ssrf
+
+    def _fetch(url, timeout=20.0):
+        if url.rstrip("/").endswith("robots.txt"):
+            return "Sitemap: https://example.com/real-sitemap.xml"
+        if url.endswith("real-sitemap.xml"):
+            return _SITEMAP  # a valid sitemap
+        if url.rstrip("/").endswith("sitemap.xml"):
+            return "<html>not a sitemap</html>"  # /sitemap.xml is a decoy
+        raise RuntimeError(url)
+
+    orig = ssrf.safe_fetch_url
+    ssrf.safe_fetch_url = _fetch
+    try:
+        resolved = asyncio_run(sm.resolve_sitemap_url("https://example.com"))
+        assert resolved == "https://example.com/real-sitemap.xml", resolved
+    finally:
+        ssrf.safe_fetch_url = orig
+
+
+def test_resolve_sitemap_falls_back_to_sitemap_xml():
+    """With no robots hint, root domain must resolve to /sitemap.xml when it's valid."""
+    import app.ingestion.sitemap as sm
+    import app.ingestion.ssrf as ssrf
+
+    def _fetch(url, timeout=20.0):
+        if url.rstrip("/").endswith("robots.txt"):
+            return ""  # no hints
+        if url.rstrip("/").endswith("sitemap.xml"):
+            return _SITEMAP
+        raise RuntimeError(url)
+
+    orig = ssrf.safe_fetch_url
+    ssrf.safe_fetch_url = _fetch
+    try:
+        resolved = asyncio_run(sm.resolve_sitemap_url("https://example.com"))
+        assert resolved == "https://example.com/sitemap.xml", resolved
+    finally:
+        ssrf.safe_fetch_url = orig
+
+
+def test_resolve_sitemap_raises_when_none_found():
+    """A domain with no sitemap anywhere must raise a clear ValueError."""
+    import app.ingestion.sitemap as sm
+    import app.ingestion.ssrf as ssrf
+
+    def _fetch(url, timeout=20.0):
+        if url.rstrip("/").endswith("robots.txt"):
+            return ""
+        if url.rstrip("/").endswith("sitemap.xml"):
+            return "<html>nope</html>"
+        raise RuntimeError(url)
+
+    orig = ssrf.safe_fetch_url
+    ssrf.safe_fetch_url = _fetch
+    try:
+        with pytest.raises(ValueError):
+            asyncio_run(sm.resolve_sitemap_url("https://example.com"))
+    finally:
+        ssrf.safe_fetch_url = orig
+
+
+def test_sitemapindex_recursion(client, patched_fetch):
+    """A <sitemapindex> must be recursed into its child sitemap and ingest those pages."""
+    import app.ingestion.ssrf as ssrf
+
+    def _fetch(url, timeout=20.0):
+        if url.rstrip("/").endswith("robots.txt"):
+            return ""
+        if url.endswith("child-sitemap.xml"):
+            return _CHILD_SITEMAP
+        if url.rstrip("/").endswith("sitemap.xml"):
+            return _INDEX
+        if url.endswith("/a"):
+            return _PAGE_A
+        if url.endswith("/b"):
+            return _PAGE_B
+        raise RuntimeError(url)
+
+    orig = ssrf.safe_fetch_url
+    ssrf.safe_fetch_url = _fetch
+    try:
+        t = _make_tenant(client)
+        auth = _auth(t["api_key"])
+        r = client.post(
+            f"{V}/acme/ingest/sitemap", headers=auth,
+            json={"url": "https://example.com/sitemap.xml", "max_urls": 10},
+        )
+        assert r.status_code == 202, r.text
+        jid = r.json()["job_id"]
+        import time
+
+        for _ in range(50):
+            st = client.get(f"{V}/acme/ingest/sitemap/{jid}", headers=auth).json()["status"]
+            if st in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        final = client.get(f"{V}/acme/ingest/sitemap/{jid}", headers=auth).json()
+        assert final["status"] == "completed", final
+        # The index points at child-sitemap.xml which lists page /b only.
+        assert final["urls_ingested"] == 1, final
+        cat = client.get(f"{V}/acme/documents", headers=auth).json()
+        assert len(cat) == 1 and cat[0]["title"] == "https://example.com/b", cat
+    finally:
+        ssrf.safe_fetch_url = orig
+
+
+def test_root_domain_onboard_crawls(client):
+    """POST /ingest/sitemap with a bare root domain must auto-discover and crawl."""
+    import app.ingestion.ssrf as ssrf
+
+    def _fetch(url, timeout=20.0):
+        if url.rstrip("/").endswith("robots.txt"):
+            return "Sitemap: https://example.com/sitemap.xml"
+        if url.endswith("child-sitemap.xml"):
+            return _CHILD_SITEMAP
+        if url.rstrip("/").endswith("sitemap.xml"):
+            return _SITEMAP
+        if url.endswith("/a"):
+            return _PAGE_A
+        if url.endswith("/b"):
+            return _PAGE_B
+        raise RuntimeError(url)
+
+    orig = ssrf.safe_fetch_url
+    ssrf.safe_fetch_url = _fetch
+    try:
+        t = _make_tenant(client)
+        auth = _auth(t["api_key"])
+        r = client.post(
+            f"{V}/acme/ingest/sitemap", headers=auth,
+            json={"url": "https://example.com", "max_urls": 10},
+        )
+        assert r.status_code == 202, r.text
+        jid = r.json()["job_id"]
+        import time
+
+        for _ in range(50):
+            st = client.get(f"{V}/acme/ingest/sitemap/{jid}", headers=auth).json()["status"]
+            if st in ("completed", "failed"):
+                break
+            time.sleep(0.1)
+        final = client.get(f"{V}/acme/ingest/sitemap/{jid}", headers=auth).json()
+        assert final["status"] == "completed", final
+        assert final["urls_ingested"] == 2, final
+        cat = client.get(f"{V}/acme/documents", headers=auth).json()
+        assert len(cat) == 2, cat
+    finally:
+        ssrf.safe_fetch_url = orig
+

@@ -141,6 +141,82 @@ async def _fetch_robots(host_root: str) -> tuple[set[str], float]:
         return set(), 0.0
 
 
+def _robots_sitemap_hints(robots_text: str, host_root: str) -> list[str]:
+    """Extract absolute Sitemap: URLs from a robots.txt body (Google-style)."""
+    hints: list[str] = []
+    for raw in robots_text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        if key.strip().lower() != "sitemap":
+            continue
+        val = val.strip()
+        if not val:
+            continue
+        hints.append(val if val.startswith("http") else urljoin(host_root + "/", val))
+    return hints
+
+
+async def resolve_sitemap_url(input_url: str) -> str:
+    """Turn a tenant-supplied pointer into a concrete sitemap URL to crawl.
+
+    Onboarding UX: a tenant may point at their *root domain* (e.g. https://example.com)
+    instead of the exact sitemap file. We then:
+      1. if the input already looks like a sitemap (path ends in .xml or contains
+         'sitemap'), try it directly;
+      2. else fetch /robots.txt and honor any ``Sitemap:`` hints (PHASE B.2 spec);
+      3. else fall back to /sitemap.xml and /sitemap_index.xml.
+    The first candidate that fetches and parses as a sitemap wins. Raises ValueError
+    if no sitemap can be located. SSRF-safe (reuses safe_fetch_url).
+    """
+    from .ssrf import safe_fetch_url
+
+    parsed = urlparse(input_url)
+    host_root = f"{parsed.scheme}://{parsed.netloc}"
+    path = (parsed.path or "").rstrip("/").lower()
+
+    # Step 1: direct sitemap-looking input.
+    if path.endswith(".xml") or "sitemap" in path:
+        try:
+            xml_text = safe_fetch_url(input_url, timeout=_DEFAULT_TIMEOUT)
+            if _looks_like_sitemap(xml_text):
+                return input_url
+        except Exception:
+            pass
+
+    # Step 2: robots.txt Sitemap: hints.
+    candidates: list[str] = []
+    try:
+        robots = safe_fetch_url(urljoin(host_root + "/", "robots.txt"), timeout=10.0)
+        candidates.extend(_robots_sitemap_hints(robots, host_root))
+    except Exception:
+        pass
+    # Step 3: common fallbacks.
+    candidates.extend([
+        urljoin(host_root + "/", "sitemap.xml"),
+        urljoin(host_root + "/", "sitemap_index.xml"),
+    ])
+
+    for cand in candidates:
+        try:
+            xml_text = safe_fetch_url(cand, timeout=_DEFAULT_TIMEOUT)
+        except Exception:
+            continue
+        if _looks_like_sitemap(xml_text):
+            return cand
+    raise ValueError(f"no sitemap found for {input_url}")
+
+
+def _looks_like_sitemap(xml_text: str) -> bool:
+    """Cheap check: parses as XML and contains at least one <loc> entry."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return False
+    return any(_strip_ns(el.tag) == "loc" and el.text for el in root.iter())
+
+
 async def discover_sitemap_urls(sitemap_url: str, max_urls: int = _DEFAULT_MAX_URLS) -> list[str]:
     """Resolve a sitemap URL to a flat list of page URLs (recursing sitemapindex)."""
     from .ssrf import safe_fetch_url
@@ -191,6 +267,13 @@ async def crawl_sitemap(
     import hashlib
 
     concurrency = max(1, min(concurrency, 8))
+    # Onboarding UX: a tenant may point at their root domain or a robots-only site; resolve
+    # it to a concrete sitemap URL (honors robots.txt Sitemap: hints, falls back to
+    # /sitemap.xml). If resolution fails we surface a clear error rather than crawling nothing.
+    try:
+        sitemap_url = await resolve_sitemap_url(sitemap_url)
+    except ValueError as e:
+        return CrawlResult(0, 0, 0, 0, [str(e)])
     urls = await discover_sitemap_urls(sitemap_url, max_urls=max_urls)
     if not urls:
         return CrawlResult(0, 0, 0, 0, ["no URLs discovered in sitemap"])
