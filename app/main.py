@@ -585,6 +585,7 @@ def query_stream(
     tenant: str,
     body: QueryRequest,
     auth: TenantDep,
+    request: Request,
 ):
     """Server-Sent Events streaming query (v9-3). Emits:
       event: sources  data: <json list of retrieved chunks (titles+snippets)>
@@ -597,6 +598,11 @@ def query_stream(
     # tenant identity is derived server-side from the Bearer key (auth.tenant_id);
     # the {tenant} path segment is a URL namespace and is not trusted (matches /query).
     _ = tenant
+
+    # P0 FIX: the SSE endpoint does the same expensive retrieval/rerank/generation as
+    # /query, so it MUST enforce the same rate limit. Without this an authenticated
+    # tenant could hammer /query/stream with zero quota enforcement.
+    rate_limit(request, auth.tenant_id)
 
     def _sse():
         try:
