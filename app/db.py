@@ -55,6 +55,11 @@ class TenantKey(Base):
     prefix: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # P1 #9: key tier. "secret" = full-power key (rk_*, can ingest/admin/rotate);
+    # "publishable" = read-only key (pk_*) safe to embed client-side in the widget.
+    # A publishable key resolves to the SAME tenant_id (isolation is unchanged) but is
+    # scope-locked to query endpoints by app/auth.py:require_secret_key.
+    kind: Mapped[str] = mapped_column(String(16), default="secret", server_default="secret", nullable=False)
 
 
 class Job(Base):
@@ -173,8 +178,11 @@ async def create_tenant(
         }
 
 
-async def add_api_key(tenant_id: str, api_key: str, session: AsyncSession | None = None) -> None:
-    """Add a secondary/rotated key for an existing tenant (hashed)."""
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", session: AsyncSession | None = None) -> None:
+    """Add a secondary/rotated key for an existing tenant (hashed).
+
+    P1 #9: `kind` = "secret" (full power, rk_*) or "publishable" (read-only, pk_*).
+    """
     now = datetime.now(UTC)
     async with (session or get_session_maker())() as s:
         key = TenantKey(
@@ -183,6 +191,7 @@ async def add_api_key(tenant_id: str, api_key: str, session: AsyncSession | None
             prefix=api_key[:8],
             created_at=now,
             revoked=False,
+            kind=kind,
         )
         s.add(key)
         await s.commit()
@@ -230,13 +239,14 @@ async def revoke_api_key(tenant_id: str, key_prefix: str, session: AsyncSession 
 async def list_key_prefixes(tenant_id: str, session: AsyncSession | None = None) -> list[dict]:
     async with (session or get_session_maker())() as s:
         stmt = (
-            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked)
+            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked, TenantKey.kind)
             .where(TenantKey.tenant_id == tenant_id)
             .order_by(TenantKey.created_at.desc())
         )
         result = await s.execute(stmt)
         return [
-            {"prefix": r.prefix, "created_at": r.created_at.isoformat(), "revoked": r.revoked}
+            {"prefix": r.prefix, "created_at": r.created_at.isoformat(),
+             "revoked": r.revoked, "kind": r.kind}
             for r in result.all()
         ]
 
@@ -244,15 +254,28 @@ async def list_key_prefixes(tenant_id: str, session: AsyncSession | None = None)
 async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -> dict | None:
     """Resolve tenant by raw API key (hash lookup)."""
     async with (session or get_session_maker())() as s:
-        stmt = select(TenantKey.tenant_id).where(
+        stmt = select(TenantKey.tenant_id, TenantKey.kind).where(
             TenantKey.key_hash == _key_hash(api_key),
             TenantKey.revoked == False,
         )
         result = await s.execute(stmt)
-        tenant_id = result.scalar_one_or_none()
-        if tenant_id is None:
+        row = result.first()
+        if row is None:
             return None
+        tenant_id, _kind = row
         return await get_tenant(tenant_id, s)
+
+
+async def get_key_kind(api_key: str, session: AsyncSession | None = None) -> str | None:
+    """P1 #9: return key tier ('secret' | 'publishable') or None if unknown/revoked."""
+    async with (session or get_session_maker())() as s:
+        stmt = select(TenantKey.kind).where(
+            TenantKey.key_hash == _key_hash(api_key),
+            TenantKey.revoked == False,
+        )
+        result = await s.execute(stmt)
+        kind = result.scalar_one_or_none()
+        return kind
 
 
 async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dict | None:

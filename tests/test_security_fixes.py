@@ -373,3 +373,407 @@ def test_query_degrades_on_backend_failure(client, monkeypatch):
     assert body["degraded"] is True
     assert body["results"] == []  # no context when backend is down
 
+
+# ---------------- Tamper-evident audit log ----------------
+
+def test_audit_log_records_admin_actions(client):
+    """v10: privileged admin actions are recorded in a hash-chained audit log and the
+    chain verifies clean. Endpoints are admin-gated (fail-closed)."""
+    h = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    # No audit visible without admin key.
+    assert client.get("/audit").status_code == 403
+    assert client.get("/audit/verify").status_code == 403
+    # Create + delete a tenant -> two chained entries.
+    r = client.post(f"{V}/tenants", json={"name": "audited"}, headers=h)
+    assert r.status_code == 201
+    tid = r.json()["tenant_id"]
+    assert client.delete(f"{V}/tenants/{tid}", headers=h).status_code == 200
+    # Read the log (admin-gated).
+    log = client.get("/audit", headers=h)
+    assert log.status_code == 200, log.text
+    entries = log.json()["entries"]
+    assert len(entries) >= 2
+    actions = [e["action"] for e in entries]
+    assert "tenant.create" in actions and "tenant.delete" in actions
+    # The chain starts at the GENESIS sentinel.
+    assert entries[0]["prev_hash"] == "GENESIS"
+    # verify_chain must report ok=True across the whole chain.
+    v = client.get("/audit/verify", headers=h)
+    assert v.status_code == 200
+    assert v.json()["ok"] is True, v.json()
+
+
+def test_audit_chain_detects_tampering():
+    """v10: mutating an audit row breaks the hash chain and verify() flags it."""
+    import app.audit as audit
+    import asyncio
+    from app.db import init_db
+
+    asyncio.run(init_db())
+    # Seed a couple of genuine entries.
+    asyncio.run(audit.append_audit("tenant.create", "admin:seed", target="t_x"))
+    asyncio.run(audit.append_audit("key.rotate", "admin:seed", target="t_x"))
+    before = asyncio.run(audit.verify_chain())
+    assert before["ok"] is True
+
+    # Tamper: rewrite the `actor` of the first real row and flip its meta so the
+    # stored row_hash no longer matches the recomputed canonical payload.
+    from app.db import get_session_maker
+    from sqlalchemy import select
+
+    maker = get_session_maker()
+    import asyncio as _a
+
+    async def _tamper():
+        async with maker() as s:
+            row = (await s.execute(select(audit.AuditLog).order_by(audit.AuditLog.id.asc()).limit(1))).scalars().first()
+            row.actor = "attacker"
+            row.meta = '{"evil":true}'
+            await s.commit()
+
+    _a.run(_tamper())
+
+    after = asyncio.run(audit.verify_chain())
+    assert after["ok"] is False
+    assert after["first_break_id"] is not None
+
+
+# ---------------- P1 #3: short admin/bearer secrets fingerprinted, never plaintext ----------------
+def test_audit_hashes_short_secret():
+    """A short ADMIN_API_KEY must be hashed before storage (P1 #3). The raw secret must
+    NOT appear in the audit table, and the stored actor must equal the stable fingerprint.
+    Hashing happens in audit_event() (the entry point used by admin routes); append_audit
+    stores whatever actor it is given."""
+    import asyncio
+    import hashlib
+
+    from app import audit
+    from app.main import audit_event
+
+    asyncio.run(audit_event("tenant.create", "short-admin-secret-123"))
+    rows = asyncio.run(audit.list_audit(limit=10))
+    actor = rows[-1]["actor"]
+    assert "short-admin-secret-123" not in actor, "raw secret leaked into audit actor"
+    assert actor == "admin:" + hashlib.sha256(b"short-admin-secret-123").hexdigest()[:16]
+    # system passthrough stays literal (not a secret)
+    asyncio.run(audit_event("tenant.create", "system"))
+    assert asyncio.run(audit.list_audit(limit=10))[-1]["actor"] == "system"
+
+
+# ---------------- P1 #4: RagError never leaks exc.internal to clients ----------------
+def test_ragerror_no_internal_leak():
+    """The global error handler must return only public_detail, never exc.internal (P1 #4)."""
+    import asyncio
+    import json
+
+    from starlette.requests import Request
+
+    from app.main import _rag_error_handler
+    from app.resilience import RagError
+
+    req = Request({"type": "http", "method": "POST", "path": "/api/v1/x/query", "headers": []})
+    err = RagError("service temporarily degraded", internal="SECRET_TRACE: db conn refused at 10.0.0.5:5432")
+    resp = asyncio.run(_rag_error_handler(req, err))
+    body = json.loads(resp.body)
+    assert body["error"] == "service temporarily degraded"
+    assert body["detail"] == "service temporarily degraded"
+    assert "SECRET_TRACE" not in body["detail"], "exc.internal leaked to client"
+    assert "10.0.0.5" not in body["detail"], "internal host leaked to client"
+
+
+# ---------------- P1 #5: data-plane actions are audited (sampled) ----------------
+def test_data_plane_actions_are_audited(client, monkeypatch):
+    """ingest / query / doc-delete must each produce a tamper-evident audit entry (P1 #5)."""
+    import asyncio
+
+    from app import audit
+    from app.config import get_settings
+
+    # Full sampling so every event is written.
+    monkeypatch.setenv("AUDIT_SAMPLE_RATE", "1.0")
+    get_settings.cache_clear()
+
+    admin = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    r = client.post(f"{V}/tenants", json={"name": "acme"}, headers=admin)
+    assert r.status_code == 201, r.text
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+
+    ing = client.post(f"{V}/acme/documents", headers=auth,
+                      json={"title": "handbook", "content": "Our office is in Berlin. PTO is 20 days.",
+                            "content_type": "text"})
+    assert ing.status_code == 201, ing.text
+    doc_id = ing.json()["doc_id"]
+
+    q = client.post(f"{V}/acme/query", headers=auth, json={"question": "where is the office", "top_k": 3})
+    assert q.status_code == 200, q.text
+
+    d = client.delete(f"{V}/acme/documents/{doc_id}", headers=auth)
+    assert d.status_code == 200, d.text
+
+    rows = asyncio.run(audit.list_audit(limit=100))
+    actions = {row["action"] for row in rows}
+    assert "tenant.ingest" in actions, f"ingest not audited: {actions}"
+    assert "tenant.query" in actions, f"query not audited: {actions}"
+    assert "tenant.delete_doc" in actions, f"doc-delete not audited: {actions}"
+    # data-plane rows carry the tenant id as actor (opaque, non-secret), never the body.
+    dp_actions = {"tenant.ingest", "tenant.query", "tenant.delete_doc", "tenant.eval"}
+    dp = [row for row in rows if row["action"] in dp_actions]
+    assert dp, "no data-plane audit rows captured"
+    assert all(row["actor"].startswith("tenant:") for row in dp)
+
+
+def test_data_plane_audit_sampling_zero_disables(client, monkeypatch):
+    """audit_sample_rate=0 must suppress data-plane audit rows (still observable knob)."""
+    import asyncio
+
+    from app import audit
+    from app.config import get_settings
+
+    monkeypatch.setenv("AUDIT_SAMPLE_RATE", "0")
+    get_settings.cache_clear()
+
+    admin = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    r = client.post(f"{V}/tenants", json={"name": "quiet"}, headers=admin)
+    key = r.json()["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+    client.post(f"{V}/quiet/documents", headers=auth,
+                json={"title": "x", "content": "hello", "content_type": "text"})
+
+    rows = asyncio.run(audit.list_audit(limit=100))
+    assert not any(row["action"] == "tenant.ingest" for row in rows)
+
+
+# ---------------- P1 #6: audit-write failures are observable (metric) ----------------
+def test_audit_write_failure_increments_metric(monkeypatch):
+    """A failed append_audit must increment rag_audit_write_failures_total (P1 #6),
+    so a gap in the accountability trail is observable rather than silently dropped."""
+    import asyncio
+
+    from app import audit
+    from app.observability import AUDIT_FAILURES
+
+    async def _boom(*a, **k):
+        raise RuntimeError("simulated db outage")
+
+    monkeypatch.setattr(audit, "get_session_maker", lambda: _boom)
+
+    def _val(sample) -> float:
+        v = getattr(sample, "_value", None)
+        if v is None:
+            return 0.0
+        return float(v.get()) if hasattr(v, "get") else float(v)
+
+    before = _val(AUDIT_FAILURES.labels(action="tenant.query"))
+    asyncio.run(audit.append_audit("tenant.query", "tenant:t_x", target="d1"))
+    after = _val(AUDIT_FAILURES.labels(action="tenant.query"))
+    assert after > before, "audit failure metric did not increment"
+    # append_audit is fail-open: it must not raise (proven by reaching this line).
+
+
+# ---------------- P1 #7: X-Forwarded-For spoofing cannot bypass IP rate limit ----------------
+def test_xff_spoof_from_untrusted_peer_ignored(monkeypatch):
+    """A client presenting a forged X-Forwarded-For must NOT be able to rotate its
+    apparent IP and dodge the per-IP rate limit (P1 #7). Only an XFF appended by a
+    peer in TRUSTED_PROXIES is honored; otherwise the real socket peer is used.
+
+    The real _client_ip() key derivation is exercised directly: with TRUSTED_PROXIES
+    empty, two different spoofed XFF values from the same (untrusted) peer must both
+    resolve to the same real peer address -> a single rate bucket.
+    """
+    from app import ratelimit
+    from app.config import get_settings
+    from starlette.requests import Request
+
+    monkeypatch.setenv("RATE_PER_IP_PER_MIN", "1")
+    monkeypatch.delenv("ALLOWED_EMBED_ORIGINS", raising=False)  # keep default []
+    monkeypatch.setenv("TRUSTED_PROXIES", "")  # ensure peer is NOT trusted
+    get_settings.cache_clear()
+
+    def _key_with_xff(xff):
+        scope = {
+            "type": "http", "method": "POST", "path": "/x",
+            "headers": [(b"x-forwarded-for", xff.encode())],
+            "client": ("203.0.113.9", 55555),  # real peer (not trusted)
+            "query_string": b"", "scheme": "http",
+        }
+        return ratelimit._client_ip(Request(scope))
+
+    k1 = _key_with_xff("1.2.3.4")
+    k2 = _key_with_xff("9.9.9.9, 8.8.8.8")
+    # Spoofed XFF ignored -> both resolve to the same real peer address.
+    assert k1 == k2 == "203.0.113.9", (k1, k2)
+
+
+def test_xff_honored_only_behind_trusted_proxy(monkeypatch):
+    """When the immediate peer IS a configured trusted proxy, the rightmost (original
+    client) XFF entry is used; when it is NOT, the real peer wins. This is the exact
+    property that prevents XFF-bypass of throttling."""
+    from app import ratelimit
+    from app.config import get_settings
+    from starlette.requests import Request
+
+    monkeypatch.setenv("TRUSTED_PROXIES", "203.0.113.0/24")
+    monkeypatch.delenv("ALLOWED_EMBED_ORIGINS", raising=False)
+    get_settings.cache_clear()
+
+    def _key(peer, xff):
+        scope = {
+            "type": "http", "method": "POST", "path": "/x",
+            "headers": [(b"x-forwarded-for", xff.encode())],
+            "client": (peer, 55555), "query_string": b"", "scheme": "http",
+        }
+        return ratelimit._client_ip(Request(scope))
+
+    # Peer is the trusted proxy -> use original client (rightmost) 198.51.100.7
+    trusted = _key("203.0.113.10", "198.51.100.7, 203.0.113.10")
+    assert trusted == "198.51.100.7", trusted
+    # Peer NOT trusted -> real peer used, XFF ignored
+    monkeypatch.setenv("TRUSTED_PROXIES", "")
+    get_settings.cache_clear()
+    untrusted = _key("198.51.100.7", "6.6.6.6, 198.51.100.7")
+    assert untrusted == "198.51.100.7", untrusted
+
+
+# ---------------- P1 #8 / P2: safe deny-by-default CORS for the embeddable widget ----------------
+def test_cors_denies_unconfigured_origin(monkeypatch):
+    """With no allowlisted origins, no Access-Control-Allow-Origin header is emitted and
+    a cross-origin preflight is rejected -> a wildcard CORS cannot expose the API (P1 #8)."""
+    monkeypatch.delenv("ALLOWED_EMBED_ORIGINS", raising=False)  # default [] = deny all
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import app
+    from starlette.testclient import TestClient
+
+    c = TestClient(app)
+    r = c.get("/health", headers={"Origin": "https://evil.example.com"})
+    assert "access-control-allow-origin" not in r.headers
+    # preflight rejected when origin not allowlisted
+    pre = c.options("/health", headers={"Origin": "https://evil.example.com"})
+    assert pre.status_code in (403, 405)
+
+
+def test_cors_allows_allowlisted_origin_and_no_wildcard(monkeypatch):
+    """An allowlisted Origin is echoed EXACTLY (never '*', never an arbitrary value), and
+    credentials are never enabled."""
+    monkeypatch.setenv("ALLOWED_EMBED_ORIGINS", '["https://app.client.com"]')
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import app
+    from starlette.testclient import TestClient
+
+    c = TestClient(app)
+    r = c.get("/health", headers={"Origin": "https://app.client.com"})
+    assert r.headers.get("access-control-allow-origin") == "https://app.client.com"
+    assert "access-control-allow-credentials" not in r.headers
+    # A different origin (even if it reaches us) must NOT be echoed.
+    r2 = c.get("/health", headers={"Origin": "https://other.example.com"})
+    assert r2.headers.get("access-control-allow-origin") != "https://other.example.com"
+
+
+def test_cors_preflight_lists_methods_headers(monkeypatch):
+    monkeypatch.setenv("ALLOWED_EMBED_ORIGINS", '["https://app.client.com"]')
+    from app.config import get_settings
+    get_settings.cache_clear()
+    from app.main import app
+    from starlette.testclient import TestClient
+
+    c = TestClient(app)
+    pre = c.options(
+        "/health",
+        headers={
+            "Origin": "https://app.client.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+    assert pre.status_code == 200
+    assert pre.headers.get("access-control-allow-origin") == "https://app.client.com"
+    assert "authorization" in pre.headers.get("access-control-allow-headers", "").lower()
+
+
+# ---------------- P1 #9: publishable (read-only) vs secret key tiers ----------------
+def _make_tenant(client, name):
+    r = client.post(f"{V}/tenants", json={"name": name}, headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")})
+    assert r.status_code == 201, r.text
+    return r.json()["api_key"]
+
+
+def test_publishable_key_can_query_but_not_ingest(client):
+    """P1 #9: a publishable key (pk_*) may READ (query) but is 403 on any write."""
+    secret = _make_tenant(client, "pktenant")
+    pub_r = client.post(f"{V}/pktenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    assert pub_r.status_code == 201, pub_r.text
+    pk = pub_r.json()["api_key"]
+    assert pk.startswith("pk_")
+
+    # Read is allowed (no docs yet -> empty results, 200).
+    q = client.post(f"{V}/pktenant/query", json={"question": "hi"}, headers={"Authorization": f"Bearer {pk}"})
+    assert q.status_code == 200, q.text
+
+    # Write is forbidden.
+    ing = client.post(f"{V}/pktenant/documents", json={"title": "x", "content": "y"},
+                      headers={"Authorization": f"Bearer {pk}"})
+    assert ing.status_code == 403
+    assert "read-only" in ing.json()["detail"].lower()
+
+
+def test_secret_key_still_has_full_power(client):
+    """P1 #9: the secret key (rk_*) continues to work for ingest + key management."""
+    secret = _make_tenant(client, "sktenant")
+    ing = client.post(f"{V}/sktenant/documents", json={"title": "x", "content": "y"},
+                      headers={"Authorization": f"Bearer {secret}"})
+    assert ing.status_code == 201, ing.text
+    # Can mint a publishable key and list keys (kind surfaced).
+    pub = client.post(f"{V}/sktenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    assert pub.status_code == 201
+    lst = client.get(f"{V}/sktenant/keys", headers={"Authorization": f"Bearer {secret}"})
+    assert lst.status_code == 200
+    kinds = {k["kind"] for k in lst.json()["keys"]}
+    assert "secret" in kinds and "publishable" in kinds
+
+
+def test_publishable_key_resolves_same_tenant_isolation_intact(client):
+    """P1 #9: a publishable key resolves to its OWN tenant only — cross-tenant reads
+    remain impossible even with a read-only key (isolation path untouched).
+
+    The tenant is derived server-side from the key, so a publishable key for A can only
+    ever query A's collection, no matter what {tenant} path segment is used.
+    """
+    a_key = _make_tenant(client, "tenantA")
+    b_key = _make_tenant(client, "tenantB")
+    # tenant A ingests a confidential doc under its secret key
+    ing_a = client.post(f"{V}/tenantA/documents", json={"title": "secret-doc", "content": "confidential-A-data"},
+                        headers={"Authorization": f"Bearer {a_key}"})
+    assert ing_a.status_code == 201
+    # tenant B ingests a DIFFERENT confidential doc under its secret key
+    ing_b = client.post(f"{V}/tenantB/documents", json={"title": "b-doc", "content": "confidential-B-data"},
+                        headers={"Authorization": f"Bearer {b_key}"})
+    assert ing_b.status_code == 201
+    # tenant A mints a publishable key
+    pub = client.post(f"{V}/tenantA/keys/publishable", headers={"Authorization": f"Bearer {a_key}"})
+    pk_a = pub.json()["api_key"]
+    # Querying under A's own namespace returns A's data (read allowed).
+    qa = client.post(f"{V}/tenantA/query", json={"question": "confidential"}, headers={"Authorization": f"Bearer {pk_a}"})
+    assert qa.status_code == 200
+    assert any("confidential-A-data" in h["text"] for h in qa.json()["results"])
+    # A publishable key must NEVER surface B's data, even if the path says tenantB
+    # (the tenant is resolved from the key, not the path).
+    qb = client.post(f"{V}/tenantB/query", json={"question": "confidential"}, headers={"Authorization": f"Bearer {pk_a}"})
+    assert qb.status_code == 200
+    assert all("confidential-B-data" not in h["text"] for h in qb.json()["results"])
+    # and the key is not even valid for B's *write* surface (defense in depth):
+    assert client.post(f"{V}/tenantB/documents", json={"title": "x", "content": "y"},
+                       headers={"Authorization": f"Bearer {pk_a}"}).status_code == 403
+
+
+def test_publishable_key_cannot_rotate_or_revoke(client):
+    """P1 #9: a leaked publishable key cannot reconfigure the tenant (rotate/revoke 403)."""
+    secret = _make_tenant(client, "cfgtenant")
+    pub = client.post(f"{V}/cfgtenant/keys/publishable", headers={"Authorization": f"Bearer {secret}"})
+    pk = pub.json()["api_key"]
+    assert client.post(f"{V}/cfgtenant/keys", headers={"Authorization": f"Bearer {pk}"}).status_code == 403
+    assert client.delete(f"{V}/cfgtenant/keys/rk_xxxx", headers={"Authorization": f"Bearer {pk}"}).status_code == 403
+
+
+

@@ -43,6 +43,7 @@ class KeyInfo(BaseModel):
     prefix: str
     created_at: str
     revoked: bool
+    kind: str = "secret"  # "secret" (rk_*) or "publishable" (pk_*) — P1 #9
 
 
 class TenantKeysOut(BaseModel):
@@ -82,6 +83,7 @@ class DocumentOut(BaseModel):
     doc_id: str
     title: str
     chunk_count: int
+    quarantined_chunks: int = 0  # ingest-time injection drops (poisoned chunks never indexed)
     content_type: str
     metadata: dict[str, Any]
 

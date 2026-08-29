@@ -1,0 +1,123 @@
+#!/home/ubuntu/rag-service/.venv/bin/python
+"""Tiny pure-Python git CLI using dulwich (no `git` binary on this host).
+
+Supports the subset needed for this project's commit+tag milestone workflow:
+  .gitpy status
+  .gitpy add <paths...> | --all
+  .gitpy commit "msg"
+  .gitpy tag <name> [--force]
+  .gitpy log [-n N]
+  .gitpy head
+"""
+from __future__ import annotations
+
+import os
+import sys
+from datetime import timezone
+
+from dulwich.repo import Repo
+from dulwich import porcelain
+from dulwich.objects import Commit, Tree, Blob
+
+REPO = os.path.dirname(os.path.abspath(__file__))
+
+
+def _identity(repo: Repo):
+    """Resolve committer/author name+email from .git/config or sane defaults."""
+    name = email = None
+    try:
+        cfg = repo.get_config()
+        name = cfg.get((b"user",), b"name")
+        email = cfg.get((b"user",), b"email")
+    except Exception:
+        pass
+    name = (name.decode() if name else "Hermes Agent") if name else "Hermes Agent"
+    email = (email.decode() if email else "hermes@localhost") if email else "hermes@localhost"
+    return name.encode(), email.encode()
+
+
+def cmd_status():
+    st = porcelain.status(REPO)
+    # st = (staged, unstaged, untracked)
+    print("staged (added):", list(st[0]) or "{}")
+    print("unstaged:", list(st[1]) or "{}")
+    print("untracked:", list(st[2]) or "{}")
+
+
+def cmd_add(paths):
+    if paths == ["--all"] or paths == ["."]:
+        porcelain.add(REPO)
+    else:
+        for p in paths:
+            porcelain.add(REPO, p)
+
+
+def cmd_commit(msg):
+    repo = Repo(REPO)
+    name, email = _identity(repo)
+    from datetime import datetime
+
+    now = datetime.now(timezone.utc)
+    ts = int(now.timestamp())
+    off = 0
+    commit_id = porcelain.commit(
+        REPO, message=msg.encode(), committer=email, author=email,
+        committer_time=ts, author_time=ts, committer_tz=off, author_tz=off,
+    )
+    print("committed", commit_id.decode()[:12])
+
+
+def cmd_tag(name, force=False):
+    repo = Repo(REPO)
+    try:
+        porcelain.tag_create(
+            REPO, name.encode(), message=f"tag {name}".encode(),
+            annotated=True, force=force,
+        )
+        print("tagged", name)
+    except Exception as e:
+        if force:
+            raise
+        print("tag exists or error:", e)
+
+
+def cmd_log(n=10):
+    repo = Repo(REPO)
+    for i, entry in enumerate(porcelain.log(repo)):
+        if i >= n:
+            break
+        print(entry.decode()[:12])
+
+
+def cmd_head():
+    repo = Repo(REPO)
+    print("HEAD:", repo.head().decode())
+
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+    if not args:
+        print(__doc__)
+        sys.exit(1)
+    cmd = args[0]
+    rest = args[1:]
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "add":
+        cmd_add(rest)
+    elif cmd == "commit":
+        cmd_commit(" ".join(rest))
+    elif cmd == "tag":
+        force = "--force" in rest
+        rest = [a for a in rest if a != "--force"]
+        cmd_tag(rest[0], force=force)
+    elif cmd == "log":
+        n = 10
+        if rest and rest[0] == "-n":
+            n = int(rest[1])
+        cmd_log(n)
+    elif cmd == "head":
+        cmd_head()
+    else:
+        print("unknown", cmd)
+        sys.exit(1)

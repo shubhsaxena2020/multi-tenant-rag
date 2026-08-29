@@ -52,6 +52,37 @@ def test_sse_streaming_query(client):
     assert "".join(tokens).strip()
 
 
+def test_sse_streaming_rate_limited(client, monkeypatch):
+    """P0 regression: the SSE stream endpoint must enforce the same rate limit as /query.
+
+    An authenticated tenant that hammers /query/stream must be throttled (429 +
+    Retry-After), not given unlimited quota-free access to the expensive
+    retrieval/rerank/generation path. We lower the per-IP limit so the test is
+    fast and deterministic instead of hammering the default 120/min bucket.
+    """
+    from app.config import get_settings
+
+    monkeypatch.setenv("RATE_PER_IP_PER_MIN", "3")
+    get_settings.cache_clear()
+
+    t = _make_tenant(client, "sse-rl")
+    key = t["api_key"]
+    auth = {"Authorization": f"Bearer {key}"}
+
+    limited = False
+    for _ in range(10):
+        r = client.post(
+            f"{V}/sse-rl/query/stream", headers=auth,
+            json={"question": "any", "top_k": 1},
+        )
+        if r.status_code == 429:
+            limited = True
+            assert "Retry-After" in r.headers
+            break
+    assert limited, "expected 429 once the SSE endpoint's rate limit was exhausted"
+
+
+
 def test_widget_routes_served_with_csp(client, monkeypatch):
     """v9-3: widget.js/widget.html are served and carry frame-ancestors CSP."""
     from app.config import get_settings

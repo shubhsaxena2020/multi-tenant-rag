@@ -61,6 +61,8 @@ Config via env (see `.env.example`): `QDRANT_URL`, `DB_URL`, `ADMIN_API_KEY`,
 
 Health: `GET /health`, `GET /health/ready`. Metrics: `GET /metrics` (Prometheus).
 Interactive contract: `GET /api/v1/docs` (Swagger). Schema: `GET /api/v1/openapi.json`.
+Admin audit trail: `GET /audit` (read, hash-chained) + `GET /audit/verify` (chain-integrity
+proof) — both gated behind `Admin-Key`, fail-closed.
 
 ## API (v1, base path `/api/v1`)
 

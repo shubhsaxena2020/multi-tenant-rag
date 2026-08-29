@@ -71,6 +71,15 @@ CIRCUIT_OPEN_EVENTS = Counter(
 )
 
 
+# P1 #6: audit-write failures are fail-open (we never block the primary op), but a gap
+# in the accountability trail must NOT go unnoticed. This counter makes a silently-dropped
+# audit write observable to Prometheus/Alertmanager; pair with an alert on sustained > 0.
+AUDIT_FAILURES = Counter(
+    "rag_audit_write_failures_total", "Audit log appends that failed (dropped, fail-open)",
+    ["action"]
+)
+
+
 def record_slo(method: str, path: str, status: int, latency: float) -> None:
     """Update SLO counters/histograms for one completed request (v9-5)."""
     ok = 200 <= status < 500
