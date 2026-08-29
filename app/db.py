@@ -55,6 +55,9 @@ class Tenant(Base):
     # failure) so clients don't have to poll job status. Empty = no callback. SSRF-guarded
     # at config time + dispatch time; payloads HMAC-signed with the master key.
     ingest_webhook_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # v10.7: per-tenant chunk quota override. 0 = inherit the global tenant_chunk_quota
+    # default (operator may tighten/raise per tenant for fleet protection / plan tiers).
+    chunk_quota: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class TenantKey(Base):
@@ -176,6 +179,7 @@ def _migrate_tenant_columns(conn) -> None:
         "system_prompt": "TEXT",
         "lead_webhook_url": "TEXT",
         "ingest_webhook_url": "TEXT",
+        "chunk_quota": "INTEGER",
     }
     dialect = conn.dialect.name
     for col, coltype in expected.items():
@@ -364,6 +368,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "system_prompt": t.system_prompt or "",
                 "lead_webhook_url": t.lead_webhook_url or "",
                 "ingest_webhook_url": t.ingest_webhook_url or "",
+                "chunk_quota": t.chunk_quota or 0,
             }
     else:
         async with session as s:
@@ -387,6 +392,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "system_prompt": t.system_prompt or "",
                 "lead_webhook_url": t.lead_webhook_url or "",
                 "ingest_webhook_url": t.ingest_webhook_url or "",
+                "chunk_quota": t.chunk_quota or 0,
             }
 
 
@@ -857,3 +863,16 @@ async def get_ingest_webhook_url(tenant_id: str, session: AsyncSession | None = 
     if not t:
         return None
     return t.get("ingest_webhook_url")
+
+
+async def set_tenant_chunk_quota(tenant_id: str, quota: int, session: AsyncSession | None = None) -> bool:
+    """v10.7: persist a per-tenant chunk quota override (0 = inherit global default).
+
+    Only callable by an operator via the admin-gated endpoint (never by a tenant using
+    its own secret key) so a tenant cannot self-escalate its capacity.
+    """
+    async with (session or get_session_maker())() as s:
+        stmt = update(Tenant).where(Tenant.tenant_id == tenant_id).values(chunk_quota=int(quota))
+        res = await s.execute(stmt)
+        await s.commit()
+        return res.rowcount > 0

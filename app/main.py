@@ -40,6 +40,8 @@ from .conversation import (
 from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
+from pydantic import Field
+
 from .models import (
     BaseModel,
     DocumentCatalogOut,
@@ -549,6 +551,27 @@ async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(requ
         meta={"collection_dropped": dropped},
     )
     return {"deleted": tenant_id, "collection_dropped": dropped}
+
+
+class TenantQuotaIn(BaseModel):
+    chunk_quota: int = Field(..., ge=0, description="Per-tenant chunk quota. 0 = inherit global default.")
+
+
+@v1.post("/admin/tenants/{tenant_id}/quota", status_code=status.HTTP_200_OK)
+async def set_tenant_quota(tenant_id: str, body: TenantQuotaIn, request: Request,
+                           _: None = Depends(require_admin)):
+    """v10.7: operator sets a per-tenant chunk quota override. Admin-gated ONLY — a tenant
+    cannot self-escalate its own capacity via the secret-key /config endpoint."""
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
+    updated = await tenants.set_tenant_chunk_quota(tenant_id, body.chunk_quota)
+    if not updated:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    log.info("tenant_quota_set", extra={"tenant_id": tenant_id, "chunk_quota": body.chunk_quota})
+    await audit_event(
+        "tenant.quota", actor=admin_key, target=tenant_id,
+        meta={"chunk_quota": body.chunk_quota},
+    )
+    return {"tenant_id": tenant_id, "chunk_quota": body.chunk_quota}
 
 
 # ---------------- Synchronous ingestion (convenience, small payloads) ----------------
@@ -1229,7 +1252,7 @@ async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request
 
 
 # ---------------- PHASE D: business value ----------------
-from .db import save_feedback, list_feedback, save_lead, list_leads, set_tenant_system_prompt, set_tenant_lead_webhook, set_tenant_ingest_webhook
+from .db import save_feedback, list_feedback, save_lead, list_leads, set_tenant_system_prompt, set_tenant_lead_webhook, set_tenant_ingest_webhook, set_tenant_chunk_quota
 from .auth import require_secret_or_publishable
 from .webhook import dispatch_lead_webhook
 
@@ -1355,6 +1378,9 @@ async def get_config(tenant: str, auth: TenantDep, request: Request,
         "system_prompt": (row or {}).get("system_prompt", "") if isinstance(row, dict) else getattr(row, "system_prompt", ""),
         "lead_webhook_configured": bool(webhook),
         "ingest_webhook_configured": bool(ingest),
+        # v10.7: expose quota usage so tenants can self-monitor capacity headroom.
+        "chunk_count": (row or {}).get("chunk_count", 0) if isinstance(row, dict) else getattr(row, "chunk_count", 0),
+        "chunk_quota": (row or {}).get("chunk_quota", 0) if isinstance(row, dict) else getattr(row, "chunk_quota", 0),
     }
 
 

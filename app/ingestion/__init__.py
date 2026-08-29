@@ -41,14 +41,24 @@ async def _enforce_quota(tenant_id: str, n_new: int) -> None:
     s = get_settings()
     if s.tenant_chunk_quota <= 0:
         return
+    # v10.7: a per-tenant override (tenant.chunk_quota) takes precedence over the global
+    # default when set (>0); 0 means "inherit global default". Operators set this via the
+    # admin-gated endpoint, so a tenant can never raise its own cap.
+    tenant = await tenants.get_tenant(tenant_id)
+    limit = getattr(tenant, "chunk_quota", 0) or s.tenant_chunk_quota
+    if limit <= 0:
+        return
     used = await tenants.chunk_count_async(tenant_id)
-    if used + n_new > s.tenant_chunk_quota:
+    if used + n_new > limit:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"tenant chunk quota exceeded ({used}/{s.tenant_chunk_quota}); "
-                   f"upgrade plan or offboard stale documents",
-            headers={"X-Quota-Limit": str(s.tenant_chunk_quota),
-                     "X-Quota-Used": str(used + n_new)},
+            detail=f"tenant chunk quota exceeded ({used}/{limit}); "
+                   f"offboard stale documents or request a quota increase",
+            headers={
+                "Retry-After": "3600",
+                "X-Quota-Limit": str(limit),
+                "X-Quota-Used": str(used + n_new),
+            },
         )
 
 

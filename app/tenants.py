@@ -25,6 +25,9 @@ from .db import (
     delete_tenant as _delete_tenant,
 )
 from .db import (
+    set_tenant_chunk_quota as _set_tenant_chunk_quota,
+)
+from .db import (
     get_tenant as _get_tenant,
 )
 from .db import (
@@ -114,3 +117,8 @@ def chunk_count(tenant_id: str) -> int:
 
 async def delete_tenant(tenant_id: str) -> bool:
     return await _delete_tenant(tenant_id)
+
+
+async def set_tenant_chunk_quota(tenant_id: str, quota: int) -> bool:
+    """v10.7: per-tenant chunk quota override (0 = inherit global default)."""
+    return await _set_tenant_chunk_quota(tenant_id, quota)

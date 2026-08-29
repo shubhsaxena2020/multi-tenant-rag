@@ -38,6 +38,8 @@ class TenantOut(BaseModel):
     lead_webhook_url: str = ""
     # v10.6: optional generic ingestion webhook (tenant callback for job completion/failure).
     ingest_webhook_url: str = ""
+    # v10.7: per-tenant chunk quota override (0 = inherit global default).
+    chunk_quota: int = 0
 
 
 # Alias for backward compatibility with db layer
