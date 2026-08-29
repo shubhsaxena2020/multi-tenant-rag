@@ -814,12 +814,12 @@ def test_future_expiry_key_works_then_patch_to_past_expires(client):
                        headers={"Authorization": f"Bearer {pk}"}).status_code == 200
     keys = client.get(f"{V}/futexp/keys", headers={"Authorization": f"Bearer {secret}"}).json()["keys"]
     prefix = next(k["prefix"] for k in keys if k["kind"] == "publishable")
-    patch = client.patch(f"{V}/futexp/keys/{prefix}/expiry", json={"expires_at": _iso(-1)},
+    past = _iso(-10)  # capture once; unambiguously in the past
+    patch = client.patch(f"{V}/futexp/keys/{prefix}/expiry", json={"expires_at": past},
                          headers={"Authorization": f"Bearer {secret}"})
-    assert patch.status_code == 200 and patch.json()["expires_at"] == _iso(-1)
+    assert patch.status_code == 200 and patch.json()["expires_at"] == past
     assert client.post(f"{V}/futexp/query", json={"question": "x"},
                        headers={"Authorization": f"Bearer {pk}"}).status_code == 401
-
 
 def test_list_keys_exposes_expires_at_and_patch_clears_it(client):
     """v10.8: list_keys surfaces expires_at; a PATCH with null clears the expiry."""
