@@ -43,6 +43,7 @@ class KeyInfo(BaseModel):
     prefix: str
     created_at: str
     revoked: bool
+    kind: str = "secret"  # "secret" (rk_*) or "publishable" (pk_*) — P1 #9
 
 
 class TenantKeysOut(BaseModel):
