@@ -88,6 +88,8 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # v9-5: durable job recovery — reset any jobs orphaned in `running` by a previous
+    # crashed worker back to `pending` so they get retried.
     try:
         from .db import init_db, requeue_orphaned_jobs
 
@@ -106,11 +108,16 @@ app = FastAPI(
     version="1.0.0",
     description="Multi-tenant Retrieval-Augmented Generation service. Tenant API is "
     "versioned under /api/v1. See /api/v1/docs for the interactive contract.",
-    openapi_url=None,
+    openapi_url=None,  # root has no schema; /api/v1 owns the versioned contract
 )
 app.add_middleware(MetricsMiddleware)
 
 
+# ---------------- Global exception handlers (v9-1 graceful degradation) ----------------
+# A Qdrant/embedder/reranker outage used to produce raw HTTP 500 stack traces on every
+# chatbot query. These handlers convert backend failures into a clean, friendly response
+# carrying `degraded: true` instead of crashing — so client chatbots look professional
+# during any infra hiccup.
 @app.exception_handler(RagError)
 async def _rag_error_handler(request: Request, exc: RagError):
     log.warning(
@@ -124,13 +131,14 @@ async def _rag_error_handler(request: Request, exc: RagError):
         content={
             "error": exc.public_detail,
             "degraded": exc.degraded,
-            "detail": exc.internal if exc.internal else exc.public_detail,
+            "detail": exc.public_detail,
         },
     )
 
 
 @app.exception_handler(Exception)
 async def _unhandled_error_handler(request: Request, exc: Exception):
+    # Last-resort: never leak raw exception text/stack to clients. Log type only.
     if isinstance(exc, RagError):
         return await _rag_error_handler(request, exc)
     log.error("unhandled_error", extra={"path": request.url.path, "error_type": type(exc).__name__})
@@ -143,12 +151,15 @@ async def _unhandled_error_handler(request: Request, exc: Exception):
 v1 = FastAPI(
     title="RAG Service API",
     version="1.0.0",
-    root_path="/api/v1",
+    root_path="/api/v1",  # so the generated OpenAPI + Swagger reflect the real mounted URL
     description=(
         "Versioned multi-tenant RAG API. Every tenant route requires "
         "`Authorization: Bearer *** Tenant identity is resolved "
         "server-side from the key; the {tenant} path segment is informational."
     ),
+    # E: docs/openapi are unauthenticated by default in FastAPI — disable the built-in
+    # endpoints and serve them only via the admin-gated routes below so they don't
+    # disclose tenant-id/path/schema info to the public.
     openapi_url=None,
     docs_url=None,
     redoc_url=None,
@@ -159,14 +170,44 @@ TenantDep = Annotated[tenants.TenantRow, Depends(get_tenant_from_header)]
 
 
 async def audit_event(action: str, actor: str, target: str = "", meta: dict | None = None) -> None:
-    if actor and actor != "system" and len(actor) > 12:
-        actor = "admin:" + hashlib.sha256(actor.encode()).hexdigest()[:12]
-    elif actor and actor != "system":
-        actor = "admin:" + actor
+    """Best-effort, fail-open audit append. Never raises (see app/audit.py).
+
+    `actor` is always server-derived (admin key fingerprint or 'system'), never the
+    untrusted request body — so the audit trail itself can't be spoofed by a caller.
+    """
+    # Hash the actor to a stable, non-secret fingerprint. Applies to EVERY non-system
+    # actor (short OR long) so a short ADMIN_API_KEY is never written to the audit table
+    # in plaintext (P1 #3). `system` is the only literal passthrough (not a secret).
+    if actor and actor != "system":
+        actor = "admin:" + hashlib.sha256(actor.encode()).hexdigest()[:16]
     await append_audit(action, actor, target=target, meta=meta)
 
 
+async def _audit_data_plane(action: str, tenant_id: str, target: str = "", meta: dict | None = None) -> None:
+    """Sampled, fail-open audit of tenant data-plane actions (ingest/query/delete/eval).
+
+    P1 #5: the accountability trail previously only covered admin actions. High-volume
+    data-plane events are sampled (config.audit_sample_rate) so the trail is observable
+    without writing every row. The tenant_id (a non-secret opaque id) is the actor; never
+    the caller-supplied body. We await append_audit directly (it is itself fail-open and
+    never raises) so the write is deterministic and testable; the cost is one sampled
+    sqlite insert per event — sub-millisecond, and reduced further by lowering
+    audit_sample_rate in high-throughput deployments.
+    """
+    import random
+
+    s = get_settings()
+    if s.audit_sample_rate <= 0:
+        return
+    if random.random() >= s.audit_sample_rate:
+        return
+    await append_audit(action, "tenant:" + tenant_id, target=target, meta=meta or {})
+
+
 def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, default_to_public: bool) -> list[str]:
+    """Server-side RBAC: narrow caller-requested groups to what the tenant is provisioned
+    for. Unauthorized groups are dropped and surfaced in telemetry (self-escalation attempt).
+    Returns the concrete acl list to apply (never None)."""
     eff = resolve_acl(requested, auth.allowed_groups, default_to_public=default_to_public)
     if requested is not None:
         dropped = [g for g in requested if g not in eff and g != PUBLIC_GROUP]
@@ -179,6 +220,7 @@ def _resolved_acl(requested: list[str] | None, auth: tenants.TenantRow, *, defau
     return eff
 
 
+# ---------------- Root (operability) routes ----------------
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "rag-service", "version": "1.0.0"}
@@ -186,6 +228,7 @@ def health():
 
 @app.get("/health/deps")
 def health_deps():
+    """Dependency/circuit-breaker status for ops dashboards (v9-1 resilience)."""
     return {
         "status": "ok",
         "circuit_breakers": {
@@ -203,11 +246,14 @@ def ready():
         c.get_collections()
         return {"status": "ready", "qdrant": "reachable"}
     except Exception as exc:
+        # Never leak raw backend exception text/stack to clients (G: log sanitization).
         log.warning("qdrant_unreachable", extra={"error_type": type(exc).__name__})
         raise HTTPException(status_code=503, detail="qdrant unreachable")
 
 
+# ---------------- v9-3: embeddable widget ----------------
 def _frame_ancestors_csp() -> str:
+    """CSP frame-ancestors from allowed_embed_origins. Empty list => 'none' (no embedding)."""
     origins = get_settings().allowed_embed_origins
     if not origins:
         return "frame-ancestors 'none'"
@@ -230,12 +276,15 @@ def widget_html():
 
     p = Path(__file__).parent / "static" / "widget.html"
     body = p.read_text(encoding="utf-8")
+    # The iframe itself is locked to allowed embed origins; the inner page gets a
+    # permissive-enough CSP for its own scripts but no frame nesting beyond what we set.
     return HTMLResponse(body, media_type="text/html",
-                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"}}
+                        headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"}
 
 
 @app.get("/health/slo")
 def health_slo():
+    """v9-5: current SLO status (availability + p95 latency) vs configured targets."""
     from .config import get_settings
     from .observability import compute_slo_status
 
@@ -251,6 +300,8 @@ def metrics(_: None = Depends(require_admin)):
     return body, {"content-type": ctype}
 
 
+# E: admin-gated OpenAPI schema + interactive docs. Served on the root app (not the
+# public v1 sub-app) so only an operator with the Admin-Key can fetch the contract.
 @app.get("/api/v1/openapi.json")
 def openapi_schema(_: None = Depends(require_admin)):
     return v1.openapi()
@@ -263,17 +314,21 @@ def docs(_: None = Depends(require_admin)):
     return get_swagger_ui_html(openapi_url="/api/v1/openapi.json", title="RAG Service API")
 
 
+# ---------------- Admin: tamper-evident audit log ----------------
 @app.get("/audit")
 async def audit_log(_: None = Depends(require_admin), limit: int = 200):
+    """Read the hash-chained audit trail. Admin-gated (fail-closed like /metrics)."""
     rows = await list_audit(limit=limit)
     return {"entries": rows, "count": len(rows)}
 
 
 @app.get("/audit/verify")
 async def audit_verify(_: None = Depends(require_admin)):
+    """Verify chain integrity. `ok=False` + `first_break_id` indicates tampering."""
     return await verify_chain()
 
 
+# ---------------- Admin: tenants ----------------
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
     admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
@@ -309,6 +364,8 @@ async def list_tenants(_: None = Depends(require_admin)):
 
 @v1.delete("/tenants/{tenant_id}", status_code=status.HTTP_200_OK)
 async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(require_admin)):
+    """Offboard a tenant: drop its Qdrant collection (hard data removal) and remove
+    the registry row. This guarantees no residual vectors remain."""
     admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
     dropped = delete_tenant_collection(tenant_id)
     removed = await tenants.delete_tenant(tenant_id)
@@ -322,6 +379,7 @@ async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(requ
     return {"deleted": tenant_id, "collection_dropped": dropped}
 
 
+# ---------------- Synchronous ingestion (convenience, small payloads) ----------------
 @v1.post("/{tenant}/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
@@ -333,6 +391,11 @@ async def create_document(tenant: str, body: DocumentCreate, auth: TenantDep, re
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
     log.info("document_ingested", extra={"tenant_id": auth.tenant_id, "chunk_count": res["chunk_count"]})
+    await _audit_data_plane(
+        "tenant.ingest", auth.tenant_id, target=res["doc_id"],
+        meta={"title": body.title, "chunks": res["chunk_count"],
+              "quarantined": res["quarantined_chunks"], "kind": "document"},
+    )
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
@@ -347,6 +410,11 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
     res = await ingest_url(auth.tenant_id, body.url, body.title, meta, acl=acl)
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
+    await _audit_data_plane(
+        "tenant.ingest", auth.tenant_id, target=res["doc_id"],
+        meta={"title": body.title, "chunks": res["chunk_count"],
+              "quarantined": res["quarantined_chunks"], "kind": "url"},
+    )
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type="html", metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
@@ -363,16 +431,25 @@ async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, reque
     res = await ingest_text(auth.tenant_id, body.title, body.text, ct, meta, acl=acl)
     INGEST_CHUNKS.inc(res["chunk_count"])
     INGEST_JOBS.labels(status="success").inc()
+    await _audit_data_plane(
+        "tenant.ingest", auth.tenant_id, target=res["doc_id"],
+        meta={"title": body.title, "chunks": res["chunk_count"],
+              "quarantined": res["quarantined_chunks"], "kind": "text"},
+    )
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
     )
 
 
+# ---------------- Async ingestion jobs (canonical, status-tracked) ----------------
 @v1.post("/{tenant}/ingest/jobs", response_model=JobStatus, status_code=status.HTTP_202_ACCEPTED)
 async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     s = get_settings()
+    # protect the embedding worker pool. NOTE: ingest limit is per-MINUTE, so window_min=1
+    # (the bug here previously passed rate_ingest_jobs_per_min as window_min, enforcing
+    # ~1 job/hour). Fixed via explicit named args so this class of bug can't recur.
     from fastapi import HTTPException
     from fastapi import status as _st
 
@@ -441,21 +518,26 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
     return {"deleted": job_id}
 
 
+# ---------------- Document management ----------------
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     delete_document(auth.tenant_id, doc_id)
+    await _audit_data_plane("tenant.delete_doc", auth.tenant_id, target=doc_id)
     return {"deleted": doc_id}
 
 
+# ---------------- Query ----------------
 @v1.post("/{tenant}/query", response_model=QueryResponse)
 async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
     s = get_settings()
     t0 = time.perf_counter()
 
+    # (9a) Input-layer guardrail: flag overt injection/jailbreak before anything else.
     injection = bool(s.injection_guard_enabled) and detect_injection(body.question)
 
+    # (9b) Conversational rewrite: resolve follow-ups against session history.
     rewritten = body.question
     was_rewritten = False
     if s.rewrite_enabled and body.session_id:
@@ -470,19 +552,26 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
             candidate_k=body.candidate_k, rerank=body.rerank, acl_filter=acl_filter,
         )
     except RagError as exc:
+        # Backend degraded (Qdrant/embedder/reranker). Return a clean, contract-shaped
+        # response with degraded=True rather than a 500 stack trace.
         log.warning("query_degraded", extra={"tenant_id": auth.tenant_id, "error_type": type(exc).__name__})
         degraded = True
+    # Filter out any chunks that contain injection
     original_len = len(hits)
     hits = [hit for hit in hits if not detect_injection(hit["text"])]
     filtered_len = len(hits)
     if filtered_len < original_len:
         log.warning(
             "injection_detected_in_retrieved_chunks",
-            extra={"tenant_id": auth.tenant_id, "filtered_count": original_len - filtered_len},
+            extra={
+                "tenant_id": auth.tenant_id,
+                "filtered_count": original_len - filtered_len,
+            },
         )
     RETRIEVAL_LATENCY.observe(time.perf_counter() - t0)
     QUERY_HITS.observe(len(hits))
 
+    # (9c) Confidence gating / abstention (Self-RAG style).
     in_scope, _reason = assess_confidence(hits, s.retrieval_confidence_threshold)
 
     results = [
@@ -499,6 +588,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     answer = None
     if body.generate:
         if injection:
+            # Do not forward a manipulative instruction into the LLM; return a safe refusal.
             answer = ("I can't follow those instructions. Ask me a question about the "
                       "documented content and I'll help.")
         elif not in_scope:
@@ -507,8 +597,10 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         else:
             answer = generate_answer(rewritten, hits)
 
+    # Best-effort answer text for session history (anchors follow-up rewriting).
     turn_answer = answer or (hits[0]["text"] if hits else "")
 
+    # Record history for the session (only when a session is in use).
     if body.session_id:
         store = get_session_store()
         store.append(body.session_id, "user", body.question)
@@ -517,6 +609,11 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     log.info("query", extra={"tenant_id": auth.tenant_id, "hits": len(hits),
                              "generate": body.generate, "injection": injection,
                              "out_of_scope": (not in_scope), "rewritten": was_rewritten})
+    await _audit_data_plane(
+        "tenant.query", auth.tenant_id,
+        meta={"hits": len(hits), "generate": body.generate, "injection": injection,
+              "out_of_scope": (not in_scope), "degraded": degraded},
+    )
     return QueryResponse(
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
@@ -532,14 +629,28 @@ def query_stream(
     auth: TenantDep,
     request: Request,
 ):
+    """Server-Sent Events streaming query (v9-3). Emits:
+      event: sources  data: <json list of retrieved chunks (titles+snippets)>
+      event: token    data: <answer token delta>   (repeated)
+      event: done     data: <json {tenant_id, out_of_scope, injection_detected, degraded}>
+      event: error    data: <json {error}>           (on failure, instead of done)
+    A client can subscribe with EventSource (note: EventSource is GET-only; for POST
+    payloads use fetch() + ReadableStream on the client side — see widget.js).
+    """
+    # tenant identity is derived server-side from the Bearer key (auth.tenant_id);
+    # the {tenant} path segment is a URL namespace and is not trusted (matches /query).
     _ = tenant
 
+    # P0 FIX: the SSE endpoint does the same expensive retrieval/rerank/generation as
+    # /query, so it MUST enforce the same rate limit. Without this an authenticated
+    # tenant could hammer /query/stream with zero quota enforcement.
     rate_limit(request, auth.tenant_id)
 
     def _sse():
         try:
             rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
             if was_rewritten:
+                # Surface the clarified query to the client (useful for chat UIs).
                 yield f"event: rewritten\ndata: {json.dumps({'query': rewritten})}\n\n"
             injection = bool(body.question) and detect_injection(body.question)
             acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
@@ -589,8 +700,10 @@ def query_stream(
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
+    """Issue a new API key for this tenant. The old key remains valid until revoked."""
     rate_limit(request, auth.tenant_id)
     new_key = generate_api_key()
     await tenants.add_api_key(auth.tenant_id, new_key)
@@ -598,6 +711,7 @@ async def rotate_api_key(tenant: str, auth: TenantDep, request: Request):
         "key.rotate", actor=auth.tenant_id, target=auth.tenant_id,
         meta={"prefix": new_key[:8]},
     )
+    # return only the new key (shown once) alongside tenant info
     return TenantOut(
         tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
         plan=auth.plan, created_at=auth.created_at, chunk_count=auth.chunk_count,
@@ -624,6 +738,7 @@ async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request
     return {"revoked": n}
 
 
+# ---------------- Evaluation (offline RAG quality, no prod traffic) ----------------
 @v1.put("/{tenant}/eval/set", status_code=status.HTTP_200_OK)
 async def put_eval_set(tenant: str, body: EvalSetIn, auth: TenantDep, request: Request):
     rate_limit(request, auth.tenant_id)
@@ -646,6 +761,8 @@ async def run_eval(tenant: str, auth: TenantDep, request: Request,
     if not items:
         raise HTTPException(status_code=400, detail="no golden set; PUT /eval/set first")
     rep = evaluate(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k, rerank=rerank)
+    await _audit_data_plane("tenant.eval", auth.tenant_id,
+                      meta={"kind": "retrieval", "top_k": top_k, "rerank": rerank})
     return _O(**rep.__dict__)
 
 
@@ -653,6 +770,8 @@ async def run_eval(tenant: str, auth: TenantDep, request: Request,
 async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
                      top_k: int = 8, candidate_k: int = 30, rerank: bool = True,
                      generate_answer: bool = True, persist: bool = True):
+    """v9-4: evaluate answer QUALITY (faithfulness + relevancy) via self-hosted LLM judge,
+    plus classic retrieval metrics. Persists a run to the trend history when persist=True."""
     rate_limit(request, auth.tenant_id)
     from .eval import evaluate_quality, load_golden_set, save_eval_run
 
@@ -665,11 +784,15 @@ async def run_eval_quality(tenant: str, auth: TenantDep, request: Request,
     if persist:
         rid = await save_eval_run(auth.tenant_id, rep, run_kind="manual_quality")
         out["run_id"] = rid
+    await _audit_data_plane("tenant.eval", auth.tenant_id,
+                      meta={"kind": "quality", "top_k": top_k, "rerank": rerank,
+                            "generate_answer": generate_answer, "persisted": persist})
     return out
 
 
 @v1.get("/{tenant}/eval/runs", response_model=list[dict])
 async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int = 50):
+    """v9-4: recent eval run history (trend tracking) for this tenant."""
     rate_limit(request, auth.tenant_id)
     from .eval import load_eval_runs
 
@@ -679,6 +802,8 @@ async def eval_runs(tenant: str, auth: TenantDep, request: Request, limit: int =
 @v1.post("/{tenant}/eval/golden/auto", response_model=dict)
 async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request,
                       n: int = 3):
+    """v9-4: auto-generate golden QA pairs from a provided document via the LLM judge.
+    Body: {"title": str, "text": str}. Returns generated EvalItems (and optionally saves)."""
     rate_limit(request, auth.tenant_id)
     from .eval import JudgeLLM, save_golden_set
 
@@ -693,4 +818,5 @@ async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request
     return {"generated": [it.__dict__ for it in items], "judge_available": judge.available}
 
 
+# Mount the versioned API
 app.mount("/api/v1", v1)
