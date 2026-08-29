@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # VPS fleet enforces a single global per-tenant/per-IP budget. Empty = in-memory.
     redis_url: str = ""
 
+    # v10.9: ingestion job queue backend. "inprocess" (default) = current single-replica
+    # ThreadPoolExecutor. "redis" = LPUSH job refs to JOB_QUEUE_KEY so any replica's worker
+    # (BLPOP) can claim + run them => horizontal scaling. No external dep for the default.
+    job_queue_backend: str = "inprocess"
+    job_queue_key: str = "rag:ingest:jobs"
+
     # Trusted reverse-proxy CIDRs. X-Forwarded-For is ONLY trusted when the immediate
     # connection comes from one of these (otherwise a client can spoof it and bypass IP
     # throttling). Empty = never trust XFF (use the real socket peer). Example:

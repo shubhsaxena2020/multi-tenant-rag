@@ -29,8 +29,11 @@ def _ensure_executor() -> ThreadPoolExecutor:
 
 
 def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None):
+    # Create a dedicated loop for this job. Critically we do NOT call asyncio.set_event_loop()
+    # — the global ThreadPoolExecutor reuses worker threads across the process, and a stale
+    # "current loop" on a reused thread would make asyncio.run() raise "already running".
+    # A bare loop.run_until_complete() only checks THIS loop's state, so it's safe here.
     loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
     result = None
     try:
         result = loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
@@ -39,16 +42,19 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
         # Sanitize error before persisting/logging (G): keep type + short message,
         # never the full traceback/raw exception text (could leak internal detail).
         safe_err = f"{type(e).__name__}: {str(e)[:200]}"
-        loop.run_until_complete(jobs.update_job(job_id, status="failed", error=safe_err))
+        try:
+            loop.run_until_complete(jobs.update_job(job_id, status="failed", error=safe_err))
+        except Exception:
+            pass
         INGEST_JOBS.labels(status="failed").inc()
         log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": safe_err})
         # v10.6: notify the tenant's webhook of the failure too (best-effort).
         result = {"status": "failed", "error": safe_err}
     finally:
-        # v10.6: dispatch the tenant ingestion webhook OUTSIDE the running loop, on the
-        # same loop, so asyncio.run() is never called from a running loop.
+        # v10.6: dispatch the tenant ingestion webhook on the SAME (still-open) loop, so we
+        # never start a nested event loop. Webhook OUTSIDE the running job loop, on `loop`.
         if result is not None:
-            _fire_ingest_webhook(tenant_id, job_id, result)
+            _fire_ingest_webhook(tenant_id, job_id, result, loop)
         loop.close()
 
 
@@ -100,21 +106,23 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
     INGEST_JOBS.labels(status="completed").inc()
     log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
     # v10.6: fire the tenant's generic ingestion webhook on completion. The callback is
-    # dispatched from _run (outside this running loop) so it can use the loop safely.
+    # dispatched from _run (outside this coroutine, on the worker loop) so it can use the
+    # loop safely.
     return {"status": "completed", "result_doc_id": result["doc_id"], "chunk_count": result["chunk_count"]}
 
 
-def _fire_ingest_webhook(tenant_id: str, job_id: str, result: dict) -> None:
+def _fire_ingest_webhook(tenant_id: str, job_id: str, result: dict, loop: asyncio.AbstractEventLoop) -> None:
     """Best-effort tenant ingestion webhook (v10.6). Looks up the tenant's configured
     callback URL and POSTs a signed event. Must NEVER raise or block the job path.
 
-    Called from _run on the worker's own loop (already closed-friendly via run_until_complete).
+    Called from _run with the worker's OWN loop; uses loop.run_until_complete (NOT
+    asyncio.run) so it never attempts to start a nested event loop on a reused thread.
     """
     try:
         from ..db import get_ingest_webhook_url
         from ..webhook import dispatch_webhook
 
-        url = asyncio.run(get_ingest_webhook_url(tenant_id))
+        url = loop.run_until_complete(get_ingest_webhook_url(tenant_id))
         if not url:
             return
         payload = {
@@ -126,10 +134,14 @@ def _fire_ingest_webhook(tenant_id: str, job_id: str, result: dict) -> None:
             "chunk_count": result.get("chunk_count"),
             "error": result.get("error"),
         }
-        asyncio.run(dispatch_webhook(url, payload, tenant_id))
+        loop.run_until_complete(dispatch_webhook(url, payload, tenant_id))
     except Exception as e:  # noqa: BLE001 — webhook must never affect the job outcome
         log.warning("ingest_webhook_failed", extra={"job_id": job_id, "error_type": type(e).__name__})
 
 
 def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:
-    _ensure_executor().submit(_run, job_id, tenant_id, kind, payload, metadata)
+    # v10.9: route through the configured job queue backend (inprocess default,
+    # redis for horizontal scaling). Enqueue is idempotent per job_id.
+    from ..job_queue import get_job_queue
+
+    get_job_queue(runner_submit=_run).enqueue(job_id, tenant_id, kind, payload, metadata)
