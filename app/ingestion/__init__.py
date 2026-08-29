@@ -85,7 +85,7 @@ async def ingest_core(
     embedder = get_embedder()
     from ..conversation import detect_injection
 
-    chunks = chunk_text(text)
+    chunks = chunk_text(text, content_type=content_type)
     # --- Ingest-time injection quarantine (OWASP LLM01:2025 indirect prompt injection) ---
     # A poisoned document is the classic RAG attack: the poison is retrieved verbatim and
     # steers the model. Defense in depth: we quarantine (drop) any chunk whose text matches
