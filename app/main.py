@@ -869,7 +869,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     rewritten = body.question
     was_rewritten = False
     if s.rewrite_enabled and body.session_id:
-        rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+        rewritten, was_rewritten = rewrite_query(auth.tenant_id, body.session_id, body.question)
 
     acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
     hits = []
@@ -931,8 +931,8 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     # Record history for the session (only when a session is in use).
     if body.session_id:
         store = get_session_store()
-        store.append(body.session_id, "user", body.question)
-        store.append(body.session_id, "assistant", turn_answer)
+        store.append(auth.tenant_id, body.session_id, "user", body.question)
+        store.append(auth.tenant_id, body.session_id, "assistant", turn_answer)
 
     log.info("query", extra={"tenant_id": auth.tenant_id, "hits": len(hits),
                              "generate": body.generate, "injection": injection,
@@ -976,7 +976,7 @@ def query_stream(
 
     def _sse():
         try:
-            rewritten, was_rewritten = rewrite_query(body.session_id, body.question)
+            rewritten, was_rewritten = rewrite_query(auth.tenant_id, body.session_id, body.question)
             if was_rewritten:
                 # Surface the clarified query to the client (useful for chat UIs).
                 yield f"event: rewritten\ndata: {json.dumps({'query': rewritten})}\n\n"
@@ -1017,8 +1017,8 @@ def query_stream(
 
             if body.session_id:
                 store = get_session_store()
-                store.append(body.session_id, "user", body.question)
-                store.append(body.session_id, "assistant", answer or (hits[0]["text"] if hits else ""))
+                store.append(auth.tenant_id, body.session_id, "user", body.question)
+                store.append(auth.tenant_id, body.session_id, "assistant", answer or (hits[0]["text"] if hits else ""))
 
             done = {"tenant_id": auth.tenant_id, "out_of_scope": (not in_scope),
                     "injection_detected": injection, "degraded": degraded}

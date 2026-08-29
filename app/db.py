@@ -107,6 +107,23 @@ class DocumentRegistry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class ConversationSession(Base):
+    """Durable multi-turn conversation history (GitHub issue: PHASE C session persistence).
+
+    Backs the embeddable widget's multi-turn memory so a conversation survives process
+    restarts and is shared across replicas that use the same database. `turns` is a JSON list
+    of {role, text} objects (most-recent last). Tenant-scoped for isolation; `session_id` is
+    unique per tenant.
+    """
+
+    __tablename__ = "conversation_sessions"
+
+    tenant_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    turns: Mapped[str] = mapped_column(Text, nullable=False, default="[]")  # JSON-encoded list
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 _engine: AsyncEngine | None = None
 _session_maker: async_sessionmaker[AsyncSession] | None = None
 

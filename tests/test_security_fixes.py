@@ -189,10 +189,11 @@ def test_conversation_rewrite_resolves_followup():
     from app.conversation import get_session_store, rewrite_query
 
     store = get_session_store()
+    tid = "tenant-rewrite"
     sid = "sess-rewrite-1"
-    store.append(sid, "user", "What is the Pro plan?")
-    store.append(sid, "assistant", "The Pro plan costs $49/month and includes SSO.")
-    rewritten, was = rewrite_query(sid, "how much does it cost?")
+    store.append(tid, sid, "user", "What is the Pro plan?")
+    store.append(tid, sid, "assistant", "The Pro plan costs $49/month and includes SSO.")
+    rewritten, was = rewrite_query(tid, sid, "how much does it cost?")
     assert was is True
     assert "Pro" in rewritten or "plan" in rewritten.lower()
 

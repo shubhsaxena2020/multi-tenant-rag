@@ -27,9 +27,11 @@ Sessions are keyed by session_id; history is kept server-side (per replica; for 
 """
 from __future__ import annotations
 
+import json
 import re
 import threading
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from .config import get_settings
 
@@ -87,22 +89,22 @@ class SessionStore:
     Redis; the interface is intentionally tiny so it can be swapped without touching callers."""
 
     def __init__(self) -> None:
-        self._sessions: dict[str, Session] = {}
+        self._sessions: dict[tuple[str, str], Session] = {}
         # RLock: append() acquires the lock then delegates to get_or_create(), which
         # re-acquires it — reentrancy required to avoid self-deadlock on one thread.
         self._lock = threading.RLock()
 
-    def get_or_create(self, session_id: str) -> Session:
+    def get_or_create(self, tenant_id: str, session_id: str) -> Session:
         with self._lock:
-            return self._sessions.setdefault(session_id, Session(session_id))
+            return self._sessions.setdefault((tenant_id, session_id), Session(session_id))
 
-    def append(self, session_id: str, role: str, text: str) -> None:
+    def append(self, tenant_id: str, session_id: str, role: str, text: str) -> None:
         with self._lock:
-            self.get_or_create(session_id).add(role, text)
+            self.get_or_create(tenant_id, session_id).add(role, text)
 
-    def history(self, session_id: str) -> list[Turn]:
+    def history(self, tenant_id: str, session_id: str) -> list[Turn]:
         with self._lock:
-            s = self._sessions.get(session_id)
+            s = self._sessions.get((tenant_id, session_id))
             return list(s.turns) if s else []
 
 
@@ -110,7 +112,116 @@ _sessions = SessionStore()
 
 
 def get_session_store() -> SessionStore:
-    return _sessions
+    """Return the active session store.
+
+    Prefers the durable, DB-backed store (survives restarts, shared across replicas that use
+    the same database). Falls back to the in-memory store if the DB layer is unavailable, so
+    the feature degrades gracefully rather than erroring.
+    """
+    global _DB_STORE
+    if _DB_STORE is _UNSET:
+        try:
+            from .db import ConversationSession  # noqa: F401  (ensure model is registered)
+
+            _DB_STORE = DBBackedSessionStore(_sessions)
+        except Exception:  # pragma: no cover - import guard; degraded mode
+            _DB_STORE = None
+    return _DB_STORE if _DB_STORE is not None else _sessions
+
+
+_UNSET = object()  # sentinel so the DB store is resolved once, lazily, on first use
+_DB_STORE = _UNSET
+
+
+class DBBackedSessionStore(SessionStore):
+    """Durable session store backed by the `conversation_sessions` table (issue: PHASE C).
+
+    Implements the same tiny interface as the in-memory store but persists turns to the
+    database, so a conversation is retained across process restarts and shared by every
+    replica pointing at the same DB. Any DB error is caught and the in-memory store is used
+    as a fallback so a transient DB issue never breaks a live chat turn.
+    """
+
+    def __init__(self, fallback: SessionStore) -> None:
+        self._fallback = fallback
+        self._lock = threading.RLock()
+
+    def append(self, tenant_id: str, session_id: str, role: str, text: str) -> None:
+        try:
+            import asyncio
+
+            from .db import get_session_maker
+
+            maker = get_session_maker()
+            try:
+                asyncio.get_running_loop().run_until_complete(
+                    self._append_async(maker, tenant_id, session_id, role, text)
+                )
+            except RuntimeError:
+                asyncio.run(self._append_async(maker, tenant_id, session_id, role, text))
+        except Exception:
+            # Degrade gracefully to in-memory for this turn rather than 500-ing the chat.
+            self._fallback.append(tenant_id, session_id, role, text)
+
+    async def _append_async(self, maker, tenant_id, session_id, role, text):
+        from sqlalchemy import select
+
+        from .db import ConversationSession
+
+        async with maker() as s:
+            row = (await s.execute(
+                select(ConversationSession).where(
+                    ConversationSession.tenant_id == tenant_id,
+                    ConversationSession.session_id == session_id,
+                )
+            )).scalar_one_or_none()
+            turns = json.loads(row.turns) if row else []
+            turns.append({"role": role, "text": text})
+            if len(turns) > _MAX_TURNS:
+                turns = turns[-_MAX_TURNS:]
+            payload = json.dumps(turns)
+            now = datetime.now(UTC)
+            if row is None:
+                s.add(ConversationSession(
+                    tenant_id=tenant_id, session_id=session_id,
+                    turns=payload, updated_at=now,
+                ))
+            else:
+                row.turns = payload
+                row.updated_at = now
+            await s.commit()
+
+    def history(self, tenant_id: str, session_id: str) -> list[Turn]:
+        try:
+            import asyncio
+
+            from .db import get_session_maker
+
+            maker = get_session_maker()
+            try:
+                return asyncio.get_running_loop().run_until_complete(
+                    self._history_async(maker, tenant_id, session_id)
+                )
+            except RuntimeError:
+                return asyncio.run(self._history_async(maker, tenant_id, session_id))
+        except Exception:
+            return self._fallback.history(tenant_id, session_id)
+
+    async def _history_async(self, maker, tenant_id, session_id):
+        from sqlalchemy import select
+
+        from .db import ConversationSession
+
+        async with maker() as s:
+            row = (await s.execute(
+                select(ConversationSession).where(
+                    ConversationSession.tenant_id == tenant_id,
+                    ConversationSession.session_id == session_id,
+                )
+            )).scalar_one_or_none()
+            if not row:
+                return []
+            return [Turn(t["role"], t["text"]) for t in json.loads(row.turns)]
 
 
 _REFERENCE_RE = re.compile(
@@ -134,12 +245,12 @@ def _heuristic_rewrite(history: list[Turn], question: str) -> str:
     return f"[Context: {ctx}] {question}"
 
 
-def rewrite_query(session_id: str | None, question: str) -> tuple[str, bool]:
+def rewrite_query(tenant_id: str, session_id: str | None, question: str) -> tuple[str, bool]:
     """Return (rewritten_query, was_rewritten). Uses LLM rewrite when configured, else the
     deterministic heuristic. Never throws — falls back to the original question."""
     if not session_id:
         return question, False
-    history = get_session_store().history(session_id)
+    history = get_session_store().history(tenant_id, session_id)
     if not history:
         return question, False
 
