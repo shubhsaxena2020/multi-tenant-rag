@@ -18,7 +18,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from . import jobs as job_store
 from . import tenants
@@ -95,6 +95,7 @@ from .observability import (
     get_logger,
     metrics_response,
 )
+from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -534,6 +535,36 @@ async def audit_verify(_: None = Depends(require_admin)):
     return await verify_chain()
 
 
+# ---------------- Admin: per-tenant usage & business reporting (PHASE D #27) ----------------
+@app.get("/admin/usage/{tenant}", response_model=dict)
+async def admin_usage(tenant: str, _: None = Depends(require_admin), days: int = 30,
+                      fmt: str = "json"):
+    """Operator-only business reporting for a tenant: current-period summary plus a daily
+    timeseries for charts/exports. `fmt=csv` returns an exportable CSV (text/csv) of the
+    daily rollup so finance/ops can drop it into a spreadsheet."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    summary = await get_usage_summary(tenant, days=days)
+    series = await get_usage_timeseries(tenant, days=days)
+    if fmt == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["date", "queries", "docs_ingested", "chunks_ingested", "eval_runs", "total"])
+        for row in series:
+            w.writerow([row["date"], row["queries"], row["docs_ingested"],
+                        row["chunks_ingested"], row["eval_runs"], row["total"]])
+        csv_text = buf.getvalue()
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=usage_{tenant}.csv"})
+    return {"summary": summary.to_dict(), "timeseries": series}
+
+
 # ---------------- Admin: tenants ----------------
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
@@ -607,6 +638,9 @@ async def create_document(tenant: str, body: DocumentCreate, request: Request, a
         meta={"title": body.title, "chunks": res["chunk_count"],
               "quarantined": res["quarantined_chunks"], "kind": "document"},
     )
+    # PHASE D (#27): per-tenant usage metering.
+    await record_usage(auth.tenant_id, "doc_ingested")
+    await record_usage(auth.tenant_id, "chunk_ingested", count=res["chunk_count"])
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type=ct, metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
@@ -627,6 +661,9 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
         meta={"title": body.title, "chunks": res["chunk_count"],
               "quarantined": res["quarantined_chunks"], "kind": "url"},
     )
+    # PHASE D (#27): per-tenant usage metering.
+    await record_usage(auth.tenant_id, "doc_ingested")
+    await record_usage(auth.tenant_id, "chunk_ingested", count=res["chunk_count"])
     return DocumentOut(
         doc_id=res["doc_id"], title=res["title"], chunk_count=res["chunk_count"],
         content_type="html", metadata=meta or {}, quarantined_chunks=res["quarantined_chunks"],
@@ -986,6 +1023,9 @@ async def upload_document(
               "quarantined": res["quarantined_chunks"], "kind": "upload",
               "content_type": pipeline_ct},
     )
+    # PHASE D (#27): per-tenant usage metering.
+    await record_usage(auth.tenant_id, "doc_ingested")
+    await record_usage(auth.tenant_id, "chunk_ingested", count=res["chunk_count"])
     return UploadOut(
         doc_id=res["doc_id"], title=doc_title, chunk_count=res["chunk_count"],
         quarantined_chunks=res["quarantined_chunks"], content_type=pipeline_ct,
@@ -1079,6 +1119,9 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
         meta={"hits": len(hits), "generate": body.generate, "injection": injection,
               "out_of_scope": (not in_scope), "degraded": degraded},
     )
+    # PHASE D (#27): reliable per-tenant usage metering (business value), distinct from the
+    # sampled audit trail. One query == one billable event.
+    await record_usage(auth.tenant_id, "query")
     return QueryResponse(
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
@@ -1110,6 +1153,8 @@ def query_stream(
     # /query, so it MUST enforce the same rate limit. Without this an authenticated
     # tenant could hammer /query/stream with zero quota enforcement.
     rate_limit(request, auth.tenant_id)
+    # PHASE D (#27): each stream is one billable query (same as /query).
+    record_usage_bg(auth.tenant_id, "query")
 
     def _sse():
         try:
@@ -1297,6 +1342,8 @@ async def run_eval(tenant: str, auth: TenantDep, request: Request, _: None = Dep
     rep = evaluate(auth.tenant_id, items, top_k=top_k, candidate_k=candidate_k, rerank=rerank)
     await _audit_data_plane("tenant.eval", auth.tenant_id,
                       meta={"kind": "retrieval", "top_k": top_k, "rerank": rerank})
+    # PHASE D (#27): per-tenant usage metering.
+    await record_usage(auth.tenant_id, "eval_run")
     return _O(**rep.__dict__)
 
 
@@ -1321,6 +1368,8 @@ async def run_eval_quality(tenant: str, auth: TenantDep, request: Request, _: No
     await _audit_data_plane("tenant.eval", auth.tenant_id,
                       meta={"kind": "quality", "top_k": top_k, "rerank": rerank,
                             "generate_answer": generate_answer, "persisted": persist})
+    # PHASE D (#27): per-tenant usage metering.
+    await record_usage(auth.tenant_id, "eval_run")
     return out
 
 
@@ -1331,6 +1380,15 @@ async def eval_runs(tenant: str, auth: TenantDep, request: Request, _: None = De
     from .eval import load_eval_runs
 
     return await load_eval_runs(auth.tenant_id, limit=limit)
+
+
+@app.get("/api/v1/{tenant}/usage", response_model=dict)
+async def tenant_usage(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), days: int = 30):
+    """PHASE D (#27): per-tenant usage summary the tenant can read with its own secret key.
+    Returns counts of queries / docs ingested / chunks ingested / eval runs over `days`."""
+    rate_limit(request, auth.tenant_id)
+    summary = await get_usage_summary(auth.tenant_id, days=days)
+    return summary.to_dict()
 
 
 @v1.post("/{tenant}/eval/golden/auto", response_model=dict)
