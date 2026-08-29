@@ -111,3 +111,148 @@ next step so it isn't a dead note.
 
 - [ ] Keep DESIGN-TRADEOFFS.md updated as each decision is made (multitenancy model,
   reranker default, encryption keyring, eval judge). Currently partially captured in commits.
+<!-- APPENDED NEXT-CHAPTER BACKLOG — generated 2026-08-30 -->
+
+# Next-Chapter Backlog (agent-1 autonomous work program)
+
+This section extends the research backlog above with an EXHAUSTIVE, sequenced work program
+so the agent always has a concrete next item. Work strictly via
+branch → PR → self-merge(squash) → tag → release. After each phase completes, self-select
+the next phase. Each task has a one-line "done when" criterion.
+
+> Decisions carried from the orchestrator:
+> - **Issue #22 (safe Markdown rendering in the embeddable widget)** — agent-1 TAKES it. It is
+>   an early item below (Phase A). Not a human gate.
+> - **Issue #15 (fail-closed on path-tenant vs key-tenant mismatch)** — recorded as a KNOWN
+>   LIMITATION / orchestrator-owned hardening item (Phase H). Do NOT silently expand into
+>   tenancy/key-tier code (P0/P1 territory the orchestrator owns); document the gap instead.
+> - Short goals cause idle drift — work the phases in order, never stop mid-program without
+>   committing a completed phase.
+
+---
+
+## Phase A — Widget hardening (#22)  [START HERE]
+1. [ ] Audit `app/static/widget.html` + `widget.js` for any `innerHTML`/unsafe insertion of
+   answer or source text. **done when** a grep for `innerHTML`/`insertAdjacentHTML` on
+   untrusted strings returns no unsafe hits.
+2. [ ] Add a minimal, allow-list Markdown renderer (e.g. vendored `marked` + `DOMPurify`, or a
+   small safe subset) to `widget.html`. **done when** a `renderMarkdown()` helper exists and is
+   unit-testable in isolation.
+3. [ ] Render retrieved `answer` and `text` (source chunks) through `renderMarkdown()` instead
+   of raw text. **done when** the demo widget shows bold/lists/links in answers without XSS.
+4. [ ] Sanitize all citation/source metadata before display (escape `title`/`doc_id`).
+   **done when** injecting a source `title` containing `<img onerror>` renders inert.
+5. [ ] Add a regression test page or Playwright check asserting malicious Markdown in an answer
+   cannot execute script in the widget iframe. **done when** the test fails on an unsafe
+   renderer and passes on the safe one.
+6. [ ] Commit Phase A on `feat/widget-safe-markdown`, open PR, self-merge, tag
+   `v16.48-widget-safe-md`, update NEEDS_HUMAN to close #22. **done when** tag exists and #22
+   marked closed in pane.
+
+## Phase B — Query rewriting & decomposition
+7. [ ] Add `app/retrieval/rewrite.py` with a `rewrite_query(question, history)` entrypoint that
+   is a passthrough when `LLM_BASE_URL` is unset. **done when** calling it with no LLM returns
+   the question unchanged.
+8. [ ] Implement LLM-backed rewrite: short-query expansion + multi-part decomposition into
+   sub-questions (gated behind `LLM_BASE_URL`/`LLM_MODEL`). **done when** a 4-word query
+   produces a single clarified rewrite; a "compare X and Y" query produces 2 sub-questions.
+9. [ ] Wire `rewrite` into `POST /{tenant}/query` (default ON, `rewrite=false` to skip).
+   **done when** query response includes `rewritten_query` field when enabled.
+10. [ ] Log rewrite usage + latency to observability. **done when** metrics show rewrite counts.
+11. [ ] Add tests for passthrough + LLM rewrite using the deterministic embedder and a mocked
+    LLM. **done when** `pytest tests/test_rewrite.py` is green.
+12. [ ] Commit Phase B, PR, merge, tag `v16.49-query-rewrite`.
+
+## Phase C — Agentic / multi-hop retrieval
+13. [ ] Add `app/retrieval/agentic.py` with a `retrieve_multi_hop(question, max_hops=3)` loop:
+    retrieve → read top chunks → reformulate follow-up → re-retrieve. **done when** a 2-hop
+    question returns chunks from both hops.
+14. [ ] Gate multi-hop behind a tenant `plan`/feature flag (`allow_multi_hop`). **done when**
+    free-tier tenants get 1 hop; paid get up to N.
+15. [ ] Expose `hops` param on `/query` and include `hop_count` in response. **done when**
+    response carries the actual hops executed.
+16. [ ] Cap token/latency cost (max hops, max chunks per hop) and add a circuit-breaker.
+    **done when** a pathological query terminates within the cap.
+17. [ ] Tests for single-hop equivalence + multi-hop improvement on a fixture corpus.
+    **done when** green; multi-hop hit_rate >= single-hop on the fixture.
+18. [ ] Commit, PR, merge, tag `v16.50-agentic-retrieval`.
+
+## Phase D — Citation faithfulness & no-answer detection
+19. [ ] Add `app/generation/faithfulness.py`: token-overlap + self-check prompt scoring of
+    answer-vs-context. **done when** a grounded answer scores high; an ungrounded one low.
+20. [ ] Emit `faithfulness` (0..1) + `answerable` flag in `/query` response. **done when**
+    response schema includes both.
+21. [ ] Log faithfulness distribution per tenant. **done when** metrics exist.
+22. [ ] Add no-answer path: if `answerable=False`, return a safe "I don't know" with citations
+    only. **done when** unanswerable query returns empty answer + 200.
+23. [ ] Tests covering faithful/unfaithful/ungrounded cases. **done when** `tests/test_faithfulness.py`
+    green.
+24. [ ] Commit, PR, merge, tag `v16.51-faithfulness`.
+
+## Phase E — Retrieval-quality observability
+25. [ ] Persist per-query eval signals (latency, hit_count, faithfulness, rerank delta,
+    rewrite used) to a small SQLite/metrics store. **done when** a query writes a row.
+26. [ ] Extend `/metrics` with retrieval-quality gauges (faithfulness avg, no-answer rate).
+    **done when** Prometheus scrape shows the new series.
+27. [ ] Build a Grafana panel JSON (`deploy/grafana/dashboards/rag-quality.json`) over the new
+    metrics. **done when** panel JSON renders the quality dashboard.
+28. [ ] Add nightly eval hook reusing `PUT/POST /eval/set|run` to trend quality. **done when**
+    a cron-able script runs eval and appends to the store.
+29. [ ] Commit, PR, merge, tag `v16.52-retrieval-observability`.
+
+## Phase F — Document parsing depth (LlamaParse-class, local-only)
+30. [ ] Extend `app/ingestion/html_util.py` + `chunker.py` to preserve heading hierarchy and
+    table boundaries as chunk metadata. **done when** a table ingested yields chunk metadata
+    marking table rows.
+31. [ ] Add confidence + citation spans to extracted chunks where derivable. **done when**
+    chunk metadata includes a `char_span` for the source.
+32. [ ] Support more `content_type` inputs (improved markdown/html/code segmentation).
+    **done when** code blocks are not split mid-token.
+33. [ ] Tests for table/heading/code ingestion fidelity. **done when** green.
+34. [ ] Commit, PR, merge, tag `v16.53-parsing-depth`.
+
+## Phase G — Self-serve onboarding + plan-gated ceilings
+35. [ ] Turn `plan` into real feature gates: map plan → {max_top_k, allow_multi_hop,
+    allow_rewrite, retention_days}. **done when** a free tenant hitting a paid-only feature
+    gets a 402/403 with a clear message.
+36. [ ] Build a minimal admin SPA (`app/static/admin.html` exists — extend it) over the
+    existing admin API for tenant lifecycle + eval dashboards. **done when** an operator can
+    create a tenant + view eval from the page.
+37. [ ] Expose read-only metering (token usage / chunk count) in the admin SPA. **done when**
+    the page shows per-tenant usage.
+38. [ ] Tests for plan-gate enforcement. **done when** green.
+39. [ ] Commit, PR, merge, tag `v16.54-plan-gates`.
+
+## Phase H — Known limitations & hardening (document, don't over-reach)
+40. [ ] Document **issue #15 (path-tenant vs key-tenant mismatch)** as a known limitation in
+    ISOLATION.md: the `/{tenant}/documents` route is key-scoped (returns the key's own data)
+    and does NOT fail-closed on a path-tenant≠key-tenant mismatch (returns 200 with own data);
+    the jobs route already 404s. **done when** ISOLATION.md has a "Known limitation" subsection.
+41. [ ] Add a test asserting current behavior (key-scoped, 200) so the gap is tracked, and
+    leave a TODO noting this is orchestrator-owned P0/P1 tenancy hardening. **done when** test
+    documents current behavior without changing it.
+42. [ ] Audit `rate_limit()` and record the per-tenant quota gap as a tracked item (see Phase I).
+    **done when** a NEEDS_HUMAN note lists it.
+
+## Phase I — Per-tenant rate limiting / quotas (from prior backlog)
+43. [ ] Store per-tenant quota counters (req/min, chunks ingested, collection size) in the
+    tenant registry. **done when** counters increment on each call.
+44. [ ] Enforce per-tenant 429 with `Retry-After` distinct from the global limiter.
+    **done when** one tenant over-quota gets 429 while others are unaffected.
+45. [ ] Tests for tenant isolation of limits. **done when** green.
+46. [ ] Commit, PR, merge, tag `v16.55-tenant-quotas`.
+
+## Phase J — Ingestion webhooks + horizontal workers (from prior backlog)
+47. [ ] Add SSRF-guarded tenant callback URL on ingest job completion. **done when** a safe
+    localhost/allowlisted URL receives a job-done POST.
+48. [ ] Add `JOB_QUEUE` backend setting (RQ/Celery-style wrapper around existing runner) for
+    multi-replica safety. **done when** a queue backend can enqueue/run a job.
+49. [ ] Document requeue_orphaned_jobs() runbook for multi-replica. **done when** runbook
+    exists in DEPLOYMENT.md.
+50. [ ] Commit, PR, merge, tag `v16.56-ingestion-scale`.
+
+## Phase K — Continuous improvement loop
+51. [ ] After each release, re-run the bounded test suite + nightly eval and append a one-line
+    result to a CHANGELOG-style note. **done when** each tag has a recorded result.
+52. [ ] Keep DESIGN-TRADEOFFS.md updated as each decision is made. **done when** new decisions
+    are captured within the PR that introduces them.
