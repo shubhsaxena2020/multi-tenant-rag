@@ -52,6 +52,9 @@ QUERY_HITS = Histogram(
     "rag_query_hits", "Number of chunks returned per query",
     buckets=(0, 1, 3, 5, 10, 20, 50),
 )
+REWRITE_USED = Counter(
+    "rag_query_rewrite_total", "Pre-retrieval query rewrites by outcome", ["used"]
+)
 
 # ---------------- v9-5: SLO tracking ----------------
 # Availability = successful (non-5xx) responses / total. Latency SLO = p95 under target.

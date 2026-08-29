@@ -332,6 +332,12 @@ class QueryRequest(BaseModel):
         description="Conversation session id. When set, the question is rewritten against "
         "prior turns (follow-up resolution) and history is recorded. Enables a chat widget.",
     )
+    rewrite: bool = Field(
+        default=True,
+        description="Pre-retrieval query rewriting (PHASE B): clarify/expand short queries and "
+        "decompose multi-part questions before the vector search. Set false to skip (use the raw "
+        "question verbatim). Passthrough when no LLM is configured.",
+    )
 
 
 class RetrievedChunk(BaseModel):
@@ -355,8 +361,13 @@ class QueryResponse(BaseModel):
     tenant_id: str
     rewritten_query: str | None = Field(
         default=None,
-        description="The self-contained query actually used for retrieval (when conversational "
-        "rewriting was applied). Useful for transparency/debugging.",
+        description="The self-contained query actually used for retrieval (pre-retrieval and/or "
+        "conversational rewriting applied). Useful for transparency/debugging.",
+    )
+    sub_questions: list[str] | None = Field(
+        default=None,
+        description="Sub-questions the query was decomposed into when it was multi-part/comparative "
+        "(PHASE B). Empty list when single-part. Surfaced for transparency/observability.",
     )
     out_of_scope: bool = Field(
         default=False,

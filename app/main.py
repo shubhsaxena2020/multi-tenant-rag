@@ -53,6 +53,7 @@ from .conversation import (
     get_session_store,
     rewrite_query,
 )
+from .retrieval.rewrite import rewrite_query as pre_retrieval_rewrite
 from .generation import generate_answer, stream_answer
 from .ingestion import ingest_text, ingest_url
 from .ingestion.runner import submit
@@ -94,6 +95,7 @@ from .observability import (
     INGEST_JOBS,
     QUERY_HITS,
     RETRIEVAL_LATENCY,
+    REWRITE_USED,
     MetricsMiddleware,
     get_logger,
     metrics_response,
@@ -1248,11 +1250,19 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     # (9a) Input-layer guardrail: flag overt injection/jailbreak before anything else.
     injection = bool(s.injection_guard_enabled) and detect_injection(body.question)
 
-    # (9b) Conversational rewrite: resolve follow-ups against session history.
-    rewritten = body.question
-    was_rewritten = False
+    # (9b) Pre-retrieval rewrite (PHASE B): clarify/expand short queries and decompose
+    # multi-part questions BEFORE the vector search. Passthrough when disabled or no LLM.
+    pre_rewritten, sub_questions, pre_used = pre_retrieval_rewrite(body.question, enabled=body.rewrite)
+    REWRITE_USED.inc(1) if pre_used else None
+
+    # (9c) Conversational rewrite: resolve follow-ups against session history (multi-turn).
+    # Applied on top of the pre-retrieval rewrite when a session is active.
+    rewritten = pre_rewritten
+    was_rewritten = pre_used
     if s.rewrite_enabled and body.session_id:
-        rewritten, was_rewritten = rewrite_query(auth.tenant_id, body.session_id, body.question)
+        conv_rewritten, conv_used = rewrite_query(auth.tenant_id, body.session_id, pre_rewritten)
+        rewritten = conv_rewritten
+        was_rewritten = was_rewritten or conv_used
 
     acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
     hits = []
@@ -1349,6 +1359,7 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
     return QueryResponse(
         results=results, answer=answer, tenant_id=auth.tenant_id,
         rewritten_query=rewritten if was_rewritten else None,
+        sub_questions=sub_questions if (sub_questions and len(sub_questions) != 1) else None,
         out_of_scope=not in_scope, injection_detected=injection,
         degraded=degraded,
     )
