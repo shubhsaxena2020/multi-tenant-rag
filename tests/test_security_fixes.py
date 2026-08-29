@@ -847,4 +847,63 @@ def test_malformed_expiry_rejected_with_422(client):
     assert r2.status_code == 422
 
 
+# ---- GitHub issue #2: additive column migration guard ----
+
+def test_init_db_adds_missing_columns_to_existing_tables(client):
+    """Issue #2: create_all does NOT add columns to pre-existing tables. init_db() must
+    idempotently ADD COLUMN for kind/expires_at/chunk_quota so an old prod DB keeps working.
+    """
+    import asyncio
+    import tempfile
+    import os
+    from app import db as dbmod
+
+    fd, path = tempfile.mkstemp(suffix=".db", prefix="test_mig_")
+    os.close(fd)
+    url = f"sqlite:///{path}"
+    try:
+        os.environ["DB_URL"] = url
+        dbmod._engine = None
+        dbmod._session_maker = None
+        eng = dbmod.get_engine()
+
+        async def _seed():
+            async with eng.begin() as c:
+                await c.exec_driver_sql("DROP TABLE IF EXISTS tenant_keys")
+                await c.exec_driver_sql("DROP TABLE IF EXISTS tenants")
+                await c.exec_driver_sql(
+                    "CREATE TABLE tenants (tenant_id VARCHAR(32) PRIMARY KEY, name VARCHAR(255) NOT NULL, "
+                    "api_key_prefix VARCHAR(16) NOT NULL, plan VARCHAR(64) NOT NULL, "
+                    "created_at TIMESTAMP NOT NULL, chunk_count INTEGER NOT NULL)"
+                )
+                await c.exec_driver_sql(
+                    "CREATE TABLE tenant_keys (key_hash VARCHAR(64) PRIMARY KEY, tenant_id VARCHAR(32) NOT NULL, "
+                    "prefix VARCHAR(16) NOT NULL, created_at TIMESTAMP NOT NULL, revoked BOOLEAN NOT NULL)"
+                )
+        asyncio.new_event_loop().run_until_complete(_seed())
+
+        # run init_db() — must ADD the missing columns without error
+        asyncio.new_event_loop().run_until_complete(dbmod.init_db())
+
+        async def _check():
+            async with eng.begin() as c:
+                kcols = [r[1] for r in (await c.exec_driver_sql("PRAGMA table_info(tenant_keys)")).fetchall()]
+                tcols = [r[1] for r in (await c.exec_driver_sql("PRAGMA table_info(tenants)")).fetchall()]
+                return kcols, tcols
+        kcols, tcols = asyncio.new_event_loop().run_until_complete(_check())
+        assert "kind" in kcols and "expires_at" in kcols, kcols
+        assert "chunk_quota" in tcols, tcols
+
+        # app must function: mint a key exercising the new columns
+        async def _use():
+            from app import tenants
+            dbmod._engine = None
+            dbmod._session_maker = None
+            await tenants.add_api_key("t_mig", "rk_dummytokenformigrationtest0000000000", kind="secret")
+            return await tenants.get_key_kind("rk_dummytokenformigrationtest0000000000")
+        assert asyncio.new_event_loop().run_until_complete(_use()) == "secret"
+    finally:
+        os.unlink(path)
+
+
 

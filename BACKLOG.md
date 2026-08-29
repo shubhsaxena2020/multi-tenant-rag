@@ -79,6 +79,13 @@ next step so it isn't a dead note.
   (nullable); `list_key_prefixes` surfaces it. PROD MIGRATION: `ALTER TABLE tenant_keys
   ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE;` (idempotent — nullable). Covered by
   tests/test_security_fixes.py (test_*_expiry_*).
+- [DONE] **Startupschema migration guard (Fixes #2)**: `init_db()` now idempotently adds
+  missing additive columns (`tenant_keys.kind`, `tenant_keys.expires_at`, `tenants.chunk_quota`)
+  to pre-existing tables via dialect-aware introspection (SQLite PRAGMA / Postgres
+  information_schema), because `create_all` only creates missing tables, not new columns.
+  Prevents the "table X has no column named Y" failure class on existing prod DBs. Real GitHub
+  issue #2 filed + auto-closed by this PR. Covered by
+  tests/test_security_fixes.py::test_init_db_adds_missing_columns_to_existing_tables.
 - [DONE] **Publishable / secret key tiers (P1 #9)**: tenants can now mint a read-only
   **publishable key** (`pk_*`) via `POST /api/v1/{tenant}/keys/publishable` that is safe to
   embed client-side (e.g. the widget). A publishable key resolves to the SAME tenant

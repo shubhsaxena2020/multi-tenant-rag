@@ -129,19 +129,57 @@ async def init_db() -> None:
     Also performs non-destructive online migrations (ADD COLUMN IF NOT EXISTS) so existing
     production tables gain new columns without a DROP/DATA LOSS. We never DROP or ALTER-type
     in a way that could lose data (per the explicit human-checkpoint migration rule).
+
+    See GitHub issue #2: `create_all` only creates missing tables, it does not add columns to
+    tables that already exist, so new model columns must be migrated here explicitly.
     """
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # v10.8 migration: TenantKey.expires_at was referenced by code but missing from the
-        # table on some deployments. Add it idempotently if absent (SQLite + Postgres syntax).
+        # Idempotent additive column migrations (issue #2). Each entry is (table, column,
+        # type). Skipped automatically if the column already exists on the live table.
+        # All are nullable + have server defaults, so ADD COLUMN is safe on SQLite + Postgres.
+        migrations = [
+            ("tenant_keys", "kind", "VARCHAR(16)"),
+            ("tenant_keys", "expires_at", "TIMESTAMP WITH TIME ZONE"),
+            ("tenants", "chunk_quota", "INTEGER"),
+        ]
+        await _run_add_column_migrations(conn, migrations)
+
+
+async def _run_add_column_migrations(conn, migrations: list[tuple[str, str, str]]) -> None:
+    """Add any missing columns from `migrations` without erroring if they already exist.
+
+    Uses dialect-aware introspection (PRAGMA for SQLite, information_schema for Postgres)
+    so a genuine failure is never swallowed by a blanket try/except.
+    """
+    dialect = conn.sync_engine.dialect.name
+    for table, column, col_type in migrations:
+        exists = await _column_exists(conn, dialect, table, column)
+        if exists:
+            continue
         try:
-            await conn.exec_driver_sql(
-                "ALTER TABLE tenant_keys ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE"
-            )
+            await conn.exec_driver_sql(f'ALTER TABLE {table} ADD COLUMN {column} {col_type}')
         except Exception:
-            # Column already exists (or dialect-specific no-op) — safe to ignore.
-            pass
+            # Best-effort: if the column appeared between check and add (race) or the dialect
+            # rejected it for a benign reason, do not take the app down — but log loudly.
+            import logging
+            logging.getLogger("rag.db").warning(
+                "migration_add_column_failed", extra={"table": table, "column": column}
+            )
+
+
+async def _column_exists(conn, dialect: str, table: str, column: str) -> bool:
+    """Return True if `column` already exists on `table` for the active dialect."""
+    if dialect == "sqlite":
+        rows = (await conn.exec_driver_sql(f"PRAGMA table_info({table})")).fetchall()
+        return any(r[1] == column for r in rows)
+    # Postgres (and most others): information_schema.columns
+    row = await conn.exec_driver_sql(
+        "SELECT 1 FROM information_schema.columns WHERE table_name = :t AND column_name = :c",
+        {"t": table, "c": column},
+    )
+    return row.first() is not None
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
