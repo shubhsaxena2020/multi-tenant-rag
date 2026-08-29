@@ -338,6 +338,13 @@ class QueryRequest(BaseModel):
         "decompose multi-part questions before the vector search. Set false to skip (use the raw "
         "question verbatim). Passthrough when no LLM is configured.",
     )
+    hops: int | None = Field(
+        default=None,
+        ge=1, le=5,
+        description="Multi-hop retrieval depth (PHASE C). 1 = single retrieval (default). >1 "
+        "requires a plan that permits multi-hop (enterprise/pro); standard tenants requesting >1 "
+        "receive 402. Capped at 5.",
+    )
 
 
 class RetrievedChunk(BaseModel):
@@ -368,6 +375,11 @@ class QueryResponse(BaseModel):
         default=None,
         description="Sub-questions the query was decomposed into when it was multi-part/comparative "
         "(PHASE B). Empty list when single-part. Surfaced for transparency/observability.",
+    )
+    hop_count: int | None = Field(
+        default=None,
+        description="Number of retrieval hops actually executed (PHASE C). 1 for single retrieval; "
+        ">1 when multi-hop was used. None when not applicable.",
     )
     out_of_scope: bool = Field(
         default=False,
