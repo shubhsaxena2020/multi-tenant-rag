@@ -30,6 +30,15 @@
   .fb-btn[aria-pressed="true"] { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
   .fb-btn:disabled { opacity:0.55; cursor:default; }
   .fb-thanks { font-style:italic; }
+  /* Human-handoff / lead capture card (issue #33) */
+  .handoff { margin-top:8px; padding:10px 12px; border:1px solid #334155; border-radius:10px; background:#0b1626; }
+  .handoff h4 { margin:0 0 6px; font-size:13px; color:var(--accent); }
+  .handoff p.sub { margin:0 0 8px; font-size:12px; color:#94a3b8; }
+  .handoff input, .handoff textarea { width:100%; margin:3px 0; padding:7px 8px; border-radius:7px;
+    border:1px solid #334155; background:#0f172a; color:var(--txt); font:inherit; font-size:13px; box-sizing:border-box; }
+  .handoff textarea { resize:vertical; min-height:48px; }
+  .handoff button { margin-top:6px; padding:6px 14px; border:0; border-radius:8px; background:var(--accent); color:var(--accent-text); font-weight:600; cursor:pointer; }
+  .handoff .ok { color:#34d399; font-size:12px; font-style:italic; }
 </style>
 </head>
 <body>
@@ -299,6 +308,53 @@ function addFeedback(question, answer) {
   return row;
 }
 
+// Human-handoff / lead-capture card (issue #33). Shown when a query is out-of-scope so a
+// lost answer becomes a follow-up lead. Posts to POST /{tenant}/handoff.
+function showHandoff(question) {
+  var d = el("div", "msg bot");
+  var card = el("div", "handoff");
+  var h = el("h4"); h.textContent = "Didn't find what you needed?";
+  var sub = el("p", "sub"); sub.textContent = "Leave your details and we'll get back to you.";
+  var name = el("input"); name.type = "text"; name.placeholder = "Your name (optional)";
+  var email = el("input"); email.type = "email"; email.placeholder = "Email *";
+  var msg = el("textarea"); msg.placeholder = "Anything else? (optional)";
+  // prefill the message with the original question for context
+  msg.value = question ? "Re: " + question : "";
+  var btn = el("button", "fb-btn"); btn.type = "button"; btn.textContent = "Send";
+  var ok = el("span", "ok");
+
+  function submit() {
+    var payload = {
+      question: question || undefined,
+      name: name.value.trim() || undefined,
+      email: email.value.trim() || undefined,
+      message: msg.value.trim() || undefined,
+      session_id: sessionId || undefined,
+    };
+    btn.disabled = true;
+    if (!tenant || !apiKey || !base) { ok.textContent = " Thanks — we'll follow up."; card.appendChild(ok); return; }
+    fetch(base.replace(/\/$/, "") + "/" + encodeURIComponent(tenant) + "/handoff", {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function () { ok.textContent = " Thanks — we'll follow up."; card.appendChild(ok); })
+      .catch(function () { ok.textContent = " Couldn't send; please email support."; card.appendChild(ok); });
+  }
+  btn.onclick = submit;
+
+  card.appendChild(h);
+  card.appendChild(sub);
+  card.appendChild(name);
+  card.appendChild(email);
+  card.appendChild(msg);
+  card.appendChild(btn);
+  d.appendChild(card);
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+}
+
 document.getElementById("close").onclick = function () {
   parent.postMessage({ type: "rag:toggle", open: false }, "*");
 };
@@ -359,6 +415,7 @@ document.getElementById("form").onsubmit = async function (ev) {
     });
     if (!resp.ok) { bot.textContent = "Error: " + resp.status; return; }
     var reader = resp.body.getReader(), decoder = new TextDecoder(), buf = "";
+    var doneData = null;
     while (true) {
       var r = await reader.read();
       if (r.done) break;
@@ -370,11 +427,17 @@ document.getElementById("form").onsubmit = async function (ev) {
         var ev = m[1], data = JSON.parse(m[2]);
         if (ev === "sources") { sources = data || []; }
         else if (ev === "token") { answer += data; bot.textContent = answer; log.scrollTop = log.scrollHeight; }
+        else if (ev === "done") { doneData = data; }
         else if (ev === "error") { bot.textContent = "Error: " + (data.error || "unknown"); }
       }
     }
     addMsg("bot", answer || "(no answer)", sources, { question: q, answer: answer });
     bot.remove();
+    // PHASE D (#33): a genuinely out-of-scope answer (not an injection block) is a lost query
+    // -> offer a human-handoff / lead-capture card so the business can follow up.
+    if (doneData && doneData.out_of_scope && !doneData.injection_detected) {
+      showHandoff(q);
+    }
   } catch (e) { bot.textContent = "Network error."; }
 };
 </script>

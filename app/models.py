@@ -389,3 +389,13 @@ class FeedbackIn(BaseModel):
     comment: str | None = Field(default=None, max_length=2000)
     question: str | None = None
     answer: str | None = None
+
+
+# ---------- Handoff / lead capture (PHASE D: out-of-scope queries) ----------
+class HandoffIn(BaseModel):
+    question: str = Field(..., min_length=1, max_length=2000)
+    name: str | None = Field(default=None, max_length=200)
+    email: str | None = Field(default=None, max_length=320)
+    phone: str | None = Field(default=None, max_length=50)
+    message: str | None = Field(default=None, max_length=4000)
+    session_id: str | None = None

@@ -66,6 +66,7 @@ from .models import (
     EvalReportOut,
     EvalSetIn,
     FeedbackIn,
+    HandoffIn,
     IngestJobRequest,
     IngestText,
     IngestUrl,
@@ -98,6 +99,7 @@ from .observability import (
 )
 from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
 from .feedback import get_feedback_summary, list_feedback, save_feedback
+from .leads import get_lead_summary, list_leads, save_lead
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -595,6 +597,36 @@ async def admin_feedback(tenant: str, _: None = Depends(require_admin), limit: i
         csv_text = buf.getvalue()
         return Response(content=csv_text, media_type="text/csv",
                         headers={"Content-Disposition": f"attachment; filename=feedback_{tenant}.csv"})
+    return {"summary": summary, "entries": entries}
+
+
+# ---------------- Admin: per-tenant lead/handoff reporting (PHASE D #33) ----------------
+@app.get("/admin/leads/{tenant}", response_model=dict)
+async def admin_leads(tenant: str, _: None = Depends(require_admin), limit: int = 100, fmt: str = "json"):
+    """Operator-only handoff-lead report for a tenant: summary (total / with_email / with_phone)
+    plus recent leads. `fmt=csv` returns an exportable CSV of the leads."""
+    from app.tenants import get_tenant
+
+    if await get_tenant(tenant) is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    summary = await get_lead_summary(tenant)
+    entries = await list_leads(tenant, limit=limit)
+    if fmt == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["id", "session_id", "question", "name", "email", "phone", "message", "ts"])
+        for e in entries:
+            w.writerow([e["id"], e.get("session_id"), (e.get("question") or "").replace("\n", " "),
+                        (e.get("name") or "").replace("\n", " "), (e.get("email") or "").replace("\n", " "),
+                        (e.get("phone") or "").replace("\n", " "), (e.get("message") or "").replace("\n", " "),
+                        e["ts"]])
+        csv_text = buf.getvalue()
+        return Response(content=csv_text, media_type="text/csv",
+                        headers={"Content-Disposition": f"attachment; filename=leads_{tenant}.csv"})
     return {"summary": summary, "entries": entries}
 
 
@@ -1455,6 +1487,27 @@ async def post_feedback(tenant: str, body: FeedbackIn, auth: TenantDep, request:
         answer=body.answer,
     )
     return {"id": fid, "rating": body.rating}
+
+
+@app.post("/api/v1/{tenant}/handoff", response_model=dict, status_code=status.HTTP_200_OK)
+async def post_handoff(tenant: str, body: HandoffIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """PHASE D (#33): capture a human-handoff lead for an out-of-scope / unanswered query.
+    Requires a reachable contact (valid email or phone) — a lead with no way to follow up is
+    rejected with 422. The caller (widget) supplies the original question + optional name/message."""
+    rate_limit(request, auth.tenant_id)
+    try:
+        lid = await save_lead(
+            auth.tenant_id,
+            question=body.question,
+            name=body.name,
+            email=body.email,
+            phone=body.phone,
+            message=body.message,
+            session_id=body.session_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"id": lid}
 
 
 @v1.post("/{tenant}/eval/golden/auto", response_model=dict)
