@@ -395,6 +395,21 @@ def widget_html():
                         headers={"Content-Security-Policy": _frame_ancestors_csp() + "; default-src 'self' 'unsafe-inline'"})
 
 
+@app.get("/demo")
+def widget_demo():
+    """Hosted demo page that embeds the chat widget (PHASE C). A visitor can paste a
+    publishable key (`pk_*`, read-only — safe for client-side embedding) and a tenant name
+    to try the widget live. Never expose a secret key (`rk_*`) here.
+    """
+    from pathlib import Path
+
+    p = Path(__file__).parent / "static" / "index.html"
+    if not p.exists():
+        return HTMLResponse("<h1>Demo not found</h1>", status_code=404)
+    body = p.read_text(encoding="utf-8")
+    return HTMLResponse(body, media_type="text/html")
+
+
 @app.get("/health/slo")
 def health_slo():
     """v9-5: current SLO status (availability + p95 latency) vs configured targets."""

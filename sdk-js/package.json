@@ -1,0 +1,31 @@
+{
+  "name": "@hermes-rag/sdk",
+  "version": "1.0.0",
+  "description": "Official JavaScript/TypeScript SDK for the Hermes multi-tenant RAG service (widget + query + ingestion).",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test"
+  },
+  "keywords": [
+    "rag",
+    "retrieval-augmented-generation",
+    "chat",
+    "embeddable-widget",
+    "sdk"
+  ],
+  "author": "Hermes Research",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/shubhsaxena2020/hermes-rag"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

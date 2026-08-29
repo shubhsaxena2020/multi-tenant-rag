@@ -57,6 +57,40 @@ class RagClient:
     def delete_document(self, tenant: str, doc_id: str) -> dict:
         return self._delete(f"/{tenant}/documents/{doc_id}")
 
+    # ---------------- file + sitemap onboarding (PHASE B/C) ----------------
+    def upload_file(self, tenant: str, filename: str, content: bytes, *, title: str | None = None,
+                    content_type: str | None = None, acl: list[str] | None = None,
+                    metadata: dict | None = None) -> dict:
+        """Upload a file (PDF / Markdown / HTML / code / text). The server extracts text.
+
+        Uses multipart/form-data. `content` is raw bytes. Returns the UploadOut payload.
+        """
+        import io
+
+        files = {"file": (filename, io.BytesIO(content), content_type or "application/octet-stream")}
+        data: dict = {}
+        if title is not None:
+            data["title"] = title
+        if acl is not None:
+            data["acl"] = ",".join(acl)
+        if metadata is not None:
+            data["metadata"] = json.dumps(metadata)
+        return self._post_multipart(f"/{tenant}/documents/upload", data=data, files=files)
+
+    def ingest_sitemap(self, tenant: str, sitemap_url: str, *, max_urls: int = 100,
+                       concurrency: int = 4, metadata: dict | None = None,
+                       acl: list[str] | None = None) -> dict:
+        body = {"url": sitemap_url, "max_urls": max_urls, "concurrency": concurrency}
+        if metadata is not None:
+            body["metadata"] = metadata
+        if acl is not None:
+            body["acl"] = acl
+        return self._post(f"/{tenant}/ingest/sitemap", body)
+
+    def list_documents(self, tenant: str, *, limit: int = 200, offset: int = 0) -> dict:
+        """Return the paginated document catalog: {items, total, limit, offset}."""
+        return self._get(f"/{tenant}/documents", params={"limit": limit, "offset": offset})
+
     # ---------------- retrieval ----------------
     def query(self, tenant: str, question: str, *, top_k: int = 5, generate: bool = False,
               rerank: bool = True, session_id: str | None = None, acl: list[str] | None = None) -> dict:
@@ -109,6 +143,24 @@ class RagClient:
         key = self.admin_key if admin else self.api_key
         h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         return h
+
+    def _get(self, path: str, *, params: dict | None = None, admin: bool = False) -> Any:
+        r = requests.get(
+            f"{self.base_url}{path}",
+            headers={k: v for k, v in self._headers(admin).items() if k != "Content-Type"},
+            params=params, timeout=self.timeout,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def _post_multipart(self, path: str, *, data: dict, files: dict, admin: bool = False) -> Any:
+        # multipart/form-data: don't set Content-Type (requests sets the boundary).
+        headers = {"Authorization": self._headers(admin)["Authorization"]}
+        r = requests.post(
+            f"{self.base_url}{path}", headers=headers, data=data, files=files, timeout=self.timeout,
+        )
+        r.raise_for_status()
+        return r.json()
 
     def _post(self, path: str, body: dict, admin: bool = False) -> Any:
         r = requests.post(f"{self.base_url}{path}", headers=self._headers(admin), json=body, timeout=self.timeout)

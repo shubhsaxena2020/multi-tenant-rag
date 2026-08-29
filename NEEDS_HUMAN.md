@@ -25,9 +25,20 @@ now work. Evidence this session:
   and PR'd separately. None of it is lost.
 
 ## Open blockers / human decisions
-- (none currently blocking the agent's in-flight work)
+- **PHASE C npm publish (issue #14) — BLOCKED, needs human credential.**
+  The JS SDK skeleton is committed under `sdk-js/` (`package.json`, `tsconfig.json`,
+  `src/index.ts`, `README.md`) and is intended to publish as `@hermes-rag/sdk`. The actual
+  `npm publish` requires an **npm registry token / publish access**, which is an external
+  credential not available in this environment — the agent cannot fabricate it. The Python
+  SDK (`sdk.py`) is complete and tested. Human action: run `cd sdk-js && npm install &&
+  npm run build && npm publish --access public` with a logged-in npm account. (Until then the
+  package can be consumed directly from `sdk-js/src/index.ts`.)
 
 ## Resolved
 - B1: `gh` CLI unavailable → now working (PRs + issues created this session).
 - Issue #4: re-ingestion duplicate chunks → fixed in PR #6, tagged v10.14-dedup-reingest.
 - Issue #2: additive-column migration guard → merged (PR #3).
+- Issue #14 (PHASE C widget+SDK polish): widget served (/widget.js,/widget.html,/demo), widget.js
+  auth bug fixed, clickable citations + safe markdown + multi-turn added, hosted demo page added,
+  SDK expanded (upload_file/ingest_sitemap/list_documents) + JS SDK skeleton. PR opened
+  (Fixes #14); only the npm *publish* step remains (external blocker above).
