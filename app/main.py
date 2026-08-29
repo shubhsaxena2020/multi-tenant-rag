@@ -54,7 +54,8 @@ from .conversation import (
     rewrite_query,
 )
 from .retrieval.rewrite import rewrite_query as pre_retrieval_rewrite
-from .retrieval.agentic import retrieve_multi_hop, multihop_denied
+from .retrieval.agentic import retrieve_multi_hop
+from .plans import capabilities_for, max_top_k_for
 from .faithfulness import score_faithfulness, is_refusal
 from .quality_store import record_quality_bg
 from .generation import generate_answer, stream_answer
@@ -1271,20 +1272,29 @@ async def query(tenant: str, body: QueryRequest, auth: TenantDep, request: Reque
 
     acl_filter = build_acl_filter(_resolved_acl(body.acl, auth, default_to_public=False))
 
-    # (9d) Multi-hop retrieval (PHASE C). Plan-gated: standard tenants may only do a single
-    # retrieval; requesting >1 hop without a multi-hop plan is rejected with 402.
+    # (9d) Plan-gated ceilings (PHASE C multi-hop + PHASE G caps). Resolve the tenant's plan
+    # capabilities once and enforce: top_k cap and multi-hop requirement for paid plans.
+    caps = capabilities_for(auth.plan)
+    if body.top_k > caps.max_top_k:
+        return JSONResponse(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            content={"error": "plan_top_k_limit",
+                      "detail": f"top_k={body.top_k} exceeds your plan limit of {caps.max_top_k}."},
+        )
+
+    # Multi-hop retrieval (PHASE C). Standard tenants may only do a single retrieval; requesting
+    # >1 hop without a multi-hop plan is rejected with 402.
     hop_count: int | None = None
-    if body.hops and body.hops > 1:
-        if multihop_denied(auth.plan, body.hops):
-            return JSONResponse(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                content={"error": "multi_hop_requires_paid_plan",
-                          "detail": "Multi-hop retrieval (>1 hop) requires an enterprise/pro plan."},
-            )
+    if body.hops and body.hops > 1 and not caps.allow_multi_hop:
+        return JSONResponse(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            content={"error": "multi_hop_requires_paid_plan",
+                      "detail": "Multi-hop retrieval (>1 hop) requires an enterprise/pro plan."},
+        )
     hits = []
     degraded = False
     try:
-        if body.hops and body.hops > 1 and not multihop_denied(auth.plan, body.hops):
+        if body.hops and body.hops > 1 and caps.allow_multi_hop:
             merged, hop_count = retrieve_multi_hop(
                 auth.tenant_id, rewritten, plan=auth.plan, requested_hops=body.hops,
                 top_k=body.top_k, candidate_k=body.candidate_k, rerank=body.rerank,
