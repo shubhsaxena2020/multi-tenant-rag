@@ -129,8 +129,17 @@ async def append_audit(
             row.row_hash = _hash(_canonical(row.chain_payload()))
             await s.commit()
     except Exception:
-        # Fail-open: audit must never break the primary operation.
-        log.warning("audit_append_failed", extra={"action": action, "actor": actor})
+        # Fail-open: audit must never break the primary operation, BUT a gap in the
+        # accountability trail must not go unnoticed (P1 #6). Surface it via a metric
+        # (Prometheus/Alertmanager) and a structured warning with the exception type so
+        # an operator can alert on sustained audit-write failures.
+        from .observability import AUDIT_FAILURES
+
+        log.warning(
+            "audit_append_failed",
+            extra={"action": action, "actor": actor, "error_type": "audit_write_error"},
+        )
+        AUDIT_FAILURES.labels(action=action).inc()
 
 
 async def list_audit(limit: int = 200, session: Any = None) -> list[dict]:
