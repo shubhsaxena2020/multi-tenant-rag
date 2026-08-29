@@ -1,117 +1,146 @@
 # VERIFICATION-PHASE-A.md
 
 Independent adversarial re-verification of the RAG platform's Phase A security work:
-**CORS allowlist (deny-by-default, allowlist-only)** + **publishable (`pk_`) / secret (`rk_`) key-tier split**.
+**CORS allowlist (deny-by-default, allowlist-only)** + **publishable (`pk_`) / secret (`rk_`) key-tier split**
++ cross-tenant isolation (the highest-regression-risk area).
 
 Verified by: agent-6 (independent second-reviewer pass, same shared tmux session as the
-orchestrator window 0, operating strictly out-of-band — no files in the main working tree
-were modified except transient copies; no panes of agent-1..agent-5 were touched).
+orchestrator window 0, operating strictly out-of-band — no files in the other agents' working
+trees were modified; no panes of agent-1..agent-5 were touched).
+
+Scope of THIS pass (2026-08-29, second/deeper review):
+1. Enumerate EVERY route in `app/main.py` and check each one's auth dependency explicitly
+   (not just the routes with existing tests).
+2. Re-run the full cross-tenant isolation suite as a final sanity check.
+3. Live-adversarial confirmation (real HTTP against a running instance) for CORS + key tier.
 
 ---
 
-## 1. What I actually did (not a re-read)
+## 0. Method / isolation posture
 
-### 1a. Pulled latest from git
-`git fetch origin` moved `origin/master` to `916cea1`. Local `master` (v10.4, window 0's WIP)
-is **diverged** from origin (local ahead 7 / behind 34) and the `gh` git-credential helper is
-broken on this host. I did **not** force a merge/rebase that could clobber window 0's working
-tree. Instead I verified the canonical "latest" Phase A code in an **isolated git worktree**
-(`/tmp/latest` = `origin/master`, commit `916cea1`) plus a read-only re-confirm against the
-local working tree. No working-tree file was modified.
-
-### 1b. Confirmed the baseline is genuinely green
-- `origin/master` full suite: **76 passed, 2 skipped** (matches its commit message).
-- Isolation/CORS/key-tier subset: **14 passed**.
-
-### 1c. Enumerated EVERY route and its auth dependency (the real gap analysis)
-Parsed `app/main.py` for all route decorators + their `Depends(...)` clauses.
-
-| Surface | Auth requirement | Uses key tier? |
-|---|---|---|
-| `/tenants` POST/GET/DELETE | `require_admin` | admin only |
-| `/metrics`, `/audit`, `/audit/verify`, `/api/v1/openapi.json`, `/api/v1/docs` | `require_admin` | admin only (fail-closed) |
-| All writes: `/documents`, `/ingest/*`, `/jobs` (+DELETE), `/documents/{id}` DELETE, `/keys` (POST/GET/DELETE prefix), `/keys/publishable`, `/eval/*` | `require_secret_key` | **secret `rk_` only** |
-| `/query`, `/query/stream` (SSE) | `TenantDep` (valid key, read) | both `pk_` and `rk_` |
-| `/health*`, `/widget.js`, `/widget.html` | public (no key) | n/a |
-
-The SSE `/query/stream` route lives on the **root app**, not the `v1` sub-app, so a naive
-scan would miss it — I explicitly checked it and confirmed it requires `TenantDep` (valid key)
-but no `require_secret_key`, consistent with `/query` (read-only). No write surface is
-ungated. **Every** state-changing route carries `require_secret_key` or `require_admin`.
-
-### 1d. Ran the service LIVE and attacked it over real HTTP
-Started the service in **in-memory mode on port 8123** (isolated from any window 0 service)
-with `ALLOWED_EMBED_ORIGINS=["https://app.client.com"]` and a test admin key. Then hammered it:
-
-**CORS (deny-by-default allowlist):**
-- Allowed origin → `Access-Control-Allow-Origin: https://app.client.com` echoed EXACTLY.
-- Disallowed origin (`https://evil.example.com`) → NO `Access-Control-Allow-Origin` header.
-- Disallowed-origin preflight → **403** (rejected, not silently passed).
-- Confirmed earlier (in-suite) subdomain-prefix, scheme, case, `null`, and literal-`*` attacks
-  are all rejected; credentials are never enabled; preflight returns the FIXED method/header
-  set, never attacker-requested values.
-
-**Publishable key (`pk_`) vs EVERY secret/write/admin/rotate/revoke/delete/eval/stream endpoint:**
-- 15/15 secret-write routes returned **403** with a publishable key (documents, ingest/url,
-  ingest/text, ingest/jobs, jobs DELETE, documents DELETE, keys POST/GET/DELETE, keys/publishable,
-  eval/set, eval/run, eval/quality, eval/runs, eval/golden/auto).
-- Publishable key CAN read: `/query` and `/query/stream` → **200** (by design).
-- Publishable key as `Admin-Key` on `/audit`, `/audit/verify`, `/metrics`,
-  `/api/v1/openapi.json` → **403** (fail-closed). Without any key → **403** too.
-
-**Cross-tenant isolation with a publishable key (highest-risk area):**
-- A's publishable key used against B's namespace path (`/api/v1/{B}/query`) resolved to
-  **A's own tenant** (path segment untrusted) and returned A's data — never B's. A write by
-  A's publishable key against B's namespace → **403**. No cross-tenant data exposure.
-
-**Key spoof / tier source:**
-- Tier is resolved from the DB `kind` column via `get_key_kind()`, NOT from the `rk_`/`pk_`
-  prefix. A key literally beginning `rk_` but stored as `kind=publishable` is treated as
-  read-only (verified in the prior in-suite adversarial run). A client cannot escalate tier
-  by faking the prefix.
-
-**Auth robustness:**
-- No `Authorization` header → **401**. Invalid key → **401**.
+- Repo `/home/ubuntu/rag-service`, HEAD at verification time `dfe72e8` (orchestrator's
+  PHASE F commit). `git diff origin/master -- app/auth.py app/main.py` shows the local tree
+  only *adds* the key-tier logic (incl. `require_secret_or_publishable`) on top of the
+  `origin/master` (`916cea1`) lineage — the CORS middleware block and tier checks are
+  byte-identical across both lineages.
+- Live service run in an ISOLATED sandbox: `QDRANT_URL=:memory:`, a throwaway SQLite
+  (`/tmp/verify_rag/*.db`), fake `ADMIN_API_KEY`/`MASTER_ENCRYPTION_KEY`, explicit
+  `ALLOWED_EMBED_ORIGINS`, rate limits set to 0 (so a 429 can never mask a 403), bound to
+  `127.0.0.1:8123`. The production `.env` was NOT loaded. Service killed and temp removed
+  after testing; **no artifacts left in the repo working tree.**
+- Two tenants (A, B) were seeded with DISTINCT real content so cross-tenant effects are
+  detectable by sentinel tokens, not by assumption.
 
 ---
 
-## 2. Results
+## 1. Route enumeration — did any endpoint miss the key-tier restriction?
 
-All checks PASS against the running service and the committed suite. **No reproducible
-security gap was found in the Phase A CORS + key-tier surface.**
+Parsed `app/main.py` with an AST pass over `app` + `v1` (the only two router objects; the
+`v1` sub-app is mounted at `/api/v1`; no `add_api_route`/`include_router`/extra mounts).
+**46 routes enumerated.** Each route's full `Depends(...)` set was extracted from both the
+decorator and the function signature. Result:
 
-The 5 "FAIL" lines produced by my first attack script were **test-harness bugs in the script
-itself**, not code defects — each was individually disproven with raw `curl`:
-- `/audit` etc. returning 404 was a URL-builder bug; real curl shows 403 (no key) / 403
-  (publishable as Admin-Key) / 200 (real admin).
-- The "leak" on B's path was A's OWN data (correct server-side tenant derivation), identical
-  to querying A's own path; B's data never appeared.
+- **Every state-changing route** (`POST/PUT/DELETE` on documents, ingest, jobs, sitemap,
+  keys, eval, config, lead, knowledge-gaps, analytics) carries `require_secret_key`.
+- **Every admin/privileged route** (`/tenants`, `/api/v1/admin/console`, `/metrics`,
+  `/audit`, `/audit/verify`, `/api/v1/openapi.json`, `/api/v1/docs`) carries `require_admin`.
+- **Only `/query` and `/api/v1/{tenant}/query/stream` are gated by `TenantDep` alone** —
+  these are read-only by design, and a publishable key legitimately needs to call them.
+- Public (no auth): `/health*`, `/widget.js`, `/widget.html` only.
+- `require_secret_key` / `require_admin` / `require_secret_or_publishable` all read the
+  API key **only** from the `Authorization: *** header (never the path), so the tier can
+  only be satisfied by presenting a valid Bearer key of the right `kind`.
 
----
+**No endpoint was missed.** There is no write/admin route reachable by a publishable key.
+(AST enumeration script: `/tmp/enum_routes.py` — re-runnable.)
 
-## 3. Notes for the orchestrator
-
-1. **Git divergence**: local `master` (window 0's v10.4 WIP) and `origin/master` (the
-   re-implemented Phase A at `916cea1`) have diverged. They implement the same Phase A
-   controls with the same design; I verified BOTH. Before merging, decide which lineage is
-   canonical — a plain `git pull` will not fast-forward (diverged branches + broken `gh`
-   credential helper on this host). The working tree was also transiently un-importable
-   while window 0 was mid-edit; it settled and imports cleanly now.
-2. **Fix already in place** (good): `/query/stream` enforces `rate_limit` (P0 fix) and
-   `TenantDep` — it is not an unauthenticated or unthrottled write surface.
-3. **No code changes were made by this verification.** The Phase A work is sound; no fix or
-   regression test was required because nothing was broken.
+Note on the one `TenantDep`-only WRITE-looking route: `POST /query` and `/query/stream` are
+read paths (they retrieve/stream answers; they do not mutate tenant data), so `TenantDep`
+alone is correct. This matches the design intent and is not a gap.
 
 ---
 
-## 4. Reproduction
+## 2. Live key-tier confirmation (publishable key vs every privileged route)
 
+A real publishable key (`pk_`) was fired at **all 35** admin/ingest/delete/rotate/write/
+secret-gated-GET routes with valid-shaped request bodies (so a 403 can only come from the
+tier check, not a 422 that would mask it). **35/35 returned 403.** The only routes a `pk_`
+is permitted on: `/query` (200), `/query/stream` (200), `/feedback` (201 —
+`require_secret_or_publishable`, benign thumbs rating). A server-minted key starting with
+`pk_` (stored `kind=publishable`) cannot escalate to a write even if a client fakes the
+prefix — tier is resolved from the DB `kind` column via `get_key_kind()`.
+
+---
+
+## 3. CORS — deny-by-default allowlist (raw header evidence)
+
+- Allowed origin → `Access-Control-Allow-Origin` echoed EXACTLY (never `*`, never a
+  client-supplied value).
+- Disallowed origin (`https://evil.example.com`) → NO `ACAO` header.
+- `Access-Control-Allow-Credentials` is NEVER set (auth is header-based, not cookie-based).
+- Disallowed-origin preflight → `403 Forbidden` (hard reject; browser never sends the real
+  request). Allowed-origin preflight → 200 with the exact origin echoed.
+- Realistic attack: a valid victim `pk_` sent from a disallowed origin returns 200 but with
+  NO `ACAO` → the browser blocks the response body from the attacker's JS.
+
+---
+
+## 4. Cross-tenant isolation — final sanity check (25/25 PASS)
+
+Re-run with two tenants and distinct sentinels. Confirmed:
+
+- Each key's own-path query returns ONLY its own data; never the other tenant's.
+- A key for tenant X used against tenant Y's **namespace path** resolves to X (path segment
+  untrusted) and returns X's data; Y's data is never exposed. Holds for both secret and
+  publishable keys, and for `/query/stream`.
+- **Cross-namespace WRITE**: a publishable key writing/deleting against another tenant's
+  path → `403`. A **secret** key writing/deleting against another tenant's path *may*
+  return 201/200, but empirically the write lands in the **key's OWN** collection — the
+  `{tenant}` path segment is NOT trusted as the write destination (every handler passes
+  `auth.tenant_id` to the storage layer; verified at source and at runtime). The other
+  tenant's documents are provably unchanged. **No cross-tenant read or write is possible.**
+
+### Behavioral note (NOT a vulnerability, flagged for clarity)
+A secret key presented against a *different* tenant's path segment currently writes to the
+key's **own** tenant (path ignored), returning a success that could mislead a caller about
+which namespace they hit. It is safe (no cross-tenant effect) but is a misleading-success
+footgun. Recommendation: optionally 400/404 when the path `tenant` segment does not match
+`auth.tenant_id`, to make the contract explicit and prevent future regressions where a
+handler might start trusting the path. This is a hardening suggestion, not a fix for a gap.
+
+---
+
+## 5. Result
+
+**No reproducible security gap found in the Phase A CORS + publishable/secret key-tier
+surface, and cross-tenant isolation holds on both read and write paths.** Enumerated all 46
+routes; the key-tier restriction is complete; CORS is deny-by-default; isolation is intact.
+
+Caveat observed out of scope: `GET /api/v1/tenants` with a *real* admin key returns 500
+(pre-existing admin-handler defect, unrelated to the tier guarantee, worth its own ticket).
+
+---
+
+## 6. Recommendations
+1. Add a committed live adversarial test (`tests/test_adversarial_phaseA.py`) covering the
+   enumeration + cross-tenant isolation matrix above (the current committed suite has
+   key-tier assertions in `tests/test_security_fixes.py` but no dedicated enumeration/isolation
+   adversarial test; a stale `.pyc` suggested one existed but no source file is present).
+2. Consider the path/key mismatch hardening noted in §4.
+
+## 7. Reproduction (isolated, non-destructive)
 ```
-# baseline (origin/master in isolated worktree, no working-tree mutation)
-git fetch origin
-git worktree add /tmp/latest origin/master
-cd /tmp/latest && PYTHONPATH=/tmp/latest .venv/bin/python -m pytest tests/ -q
-# live attack: start on a private port, run attack_live.py (CORS + every-route key-tier)
+mkdir /tmp/verify_rag && cd /tmp/verify_rag
+export PYTHONPATH=/home/ubuntu/rag-service QDRANT_URL=:memory: \
+  DB_URL=sqlite:////tmp/verify_rag/v.db ADMIN_API_KEY=test \
+  MASTER_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
+  USE_REAL_EMBEDDER=0 USE_REAL_RERANKER=0 \
+  ALLOWED_EMBED_ORIGINS='["https://app.client.com"]' \
+  RATE_PER_TENANT_PER_MIN=0 RATE_PER_IP_PER_MIN=0 RATE_INGEST_JOBS_PER_MIN=0
+uvicorn app.main:app --host 127.0.0.1 --port 8123 &
+python enum_routes.py         # AST enumeration of all routes + tier flags
+python phase_a_verify.py      # CORS + key-tier + isolation matrix
+python isolation_final.py     # 25/25 cross-tenant isolation suite
 ```
 
-Verified: 2026-08-29 · agent-6 · scope: Phase A CORS + publishable/secret key tiers only.
+Verified: 2026-08-29 · agent-6 · scope: Phase A CORS + publishable/secret key tiers + cross-tenant isolation.
