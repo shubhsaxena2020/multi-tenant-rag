@@ -16,6 +16,9 @@ os.environ["ADMIN_API_KEY"] = "test-admin-key-for-tests"
 os.environ["USE_REAL_EMBEDDER"] = "0"
 os.environ["USE_REAL_RERANKER"] = "0"
 os.environ["MASTER_ENCRYPTION_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+# TEST-ONLY escape: permit loopback egress so webhook tests can run a local callback
+# server. Production keeps WEBHOOK_ALLOW_PRIVATE unset (False) -> strict SSRF guard.
+os.environ["WEBHOOK_ALLOW_PRIVATE"] = "1"
 
 
 @pytest.fixture(autouse=True)

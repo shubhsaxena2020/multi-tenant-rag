@@ -1229,7 +1229,7 @@ async def auto_golden(tenant: str, body: dict, auth: TenantDep, request: Request
 
 
 # ---------------- PHASE D: business value ----------------
-from .db import save_feedback, list_feedback, save_lead, list_leads, set_tenant_system_prompt, set_tenant_lead_webhook
+from .db import save_feedback, list_feedback, save_lead, list_leads, set_tenant_system_prompt, set_tenant_lead_webhook, set_tenant_ingest_webhook
 from .auth import require_secret_or_publishable
 from .webhook import dispatch_lead_webhook
 
@@ -1252,6 +1252,31 @@ class LeadIn(BaseModel):
 class TenantConfigIn(BaseModel):
     system_prompt: str | None = None
     lead_webhook_url: str | None = None
+    ingest_webhook_url: str | None = None
+
+
+def _validate_webhook_url(url: str) -> None:
+    """SSRF-guard a tenant-supplied webhook URL at config time (fail-closed).
+
+    Rejects non-http(s), non-standard ports, and any host that resolves to a private /
+    loopback / link-local / cloud-metadata address. Raises HTTPException(422) on block.
+    """
+    from .ingestion.ssrf import validate_url_for_egress
+
+    try:
+        # Config-time: structural validation only (no DNS). localhost/internal names and
+        # literal internal IPs are rejected; bog-standard public hostnames pass and are
+        # re-validated (with DNS resolution + IP-pinning) at dispatch time.
+        # The allow_private escape (WEBHOOK_ALLOW_PRIVATE) is test-only: it relaxes the
+        # loopback/port rules so a local callback server can receive events. Production
+        # keeps the env unset -> strict SSRF guard at BOTH config and dispatch time.
+        allow_private = get_settings().webhook_allow_private
+        validate_url_for_egress(url, allow_private=allow_private, resolve=False)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"webhook URL rejected (SSRF guard): {e}",
+        ) from e
 
 
 @v1.post("/{tenant}/feedback", status_code=status.HTTP_201_CREATED)
@@ -1320,33 +1345,38 @@ async def get_leads(tenant: str, auth: TenantDep, request: Request,
 @v1.get("/{tenant}/config", response_model=dict)
 async def get_config(tenant: str, auth: TenantDep, request: Request,
                      _: None = Depends(require_secret_key)):
-    """PHASE D.3: read the tenant's persona (system_prompt) + lead webhook (masked)."""
+    """PHASE D.3: read the tenant's persona (system_prompt) + webhooks (masked)."""
     rate_limit(request, auth.tenant_id)
     row = await tenants.get_tenant(auth.tenant_id)
     webhook = (row or {}).get("lead_webhook_url", "") if isinstance(row, dict) else getattr(row, "lead_webhook_url", "")
+    ingest = (row or {}).get("ingest_webhook_url", "") if isinstance(row, dict) else getattr(row, "ingest_webhook_url", "")
     return {
         "tenant_id": auth.tenant_id,
         "system_prompt": (row or {}).get("system_prompt", "") if isinstance(row, dict) else getattr(row, "system_prompt", ""),
         "lead_webhook_configured": bool(webhook),
+        "ingest_webhook_configured": bool(ingest),
     }
 
 
 @v1.post("/{tenant}/config", status_code=status.HTTP_200_OK)
 async def set_config(tenant: str, body: TenantConfigIn, auth: TenantDep, request: Request,
                      _: None = Depends(require_secret_key)):
-    """PHASE D.3: set a per-tenant custom system prompt / persona (and optional webhook)."""
+    """PHASE D.3 + v10.6: set a per-tenant custom system prompt / persona and optional
+    outbound webhooks. Webhook URLs are SSRF-guarded at config time (fail-closed)."""
     rate_limit(request, auth.tenant_id)
     if body.system_prompt is not None:
         await set_tenant_system_prompt(auth.tenant_id, body.system_prompt)
     if body.lead_webhook_url is not None:
-        # Basic URL sanity; only http(s) allowed. Live endpoint remains an operator step.
-        import re
-
-        if body.lead_webhook_url and not re.match(r"^https?://", body.lead_webhook_url):
-            raise HTTPException(status_code=422, detail="lead_webhook_url must be http(s)")
+        if body.lead_webhook_url:
+            _validate_webhook_url(body.lead_webhook_url)
         await set_tenant_lead_webhook(auth.tenant_id, body.lead_webhook_url)
+    if body.ingest_webhook_url is not None:
+        if body.ingest_webhook_url:
+            _validate_webhook_url(body.ingest_webhook_url)
+        await set_tenant_ingest_webhook(auth.tenant_id, body.ingest_webhook_url)
     await _audit_data_plane("tenant.config", auth.tenant_id,
-                           meta={"system_prompt_set": body.system_prompt is not None})
+                           meta={"system_prompt_set": body.system_prompt is not None,
+                                 "ingest_webhook_set": body.ingest_webhook_url is not None})
     return {"ok": True}
 
 

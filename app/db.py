@@ -51,6 +51,10 @@ class Tenant(Base):
     # Live endpoint config is an operator/human step; default is store-only with safe
     # mock webhook in tests.
     lead_webhook_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # v10.6: optional generic INGESTION webhook (tenant callback for job completion /
+    # failure) so clients don't have to poll job status. Empty = no callback. SSRF-guarded
+    # at config time + dispatch time; payloads HMAC-signed with the master key.
+    ingest_webhook_url: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
 class TenantKey(Base):
@@ -149,10 +153,39 @@ def get_session_maker() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Create tables if they don't exist. Safe to call multiple times."""
+    """Create tables if they don't exist AND add any missing columns (non-destructive
+    migration for live DBs). Safe to call multiple times."""
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Non-destructive migration: add columns that may be missing on an existing
+        # tenant DB (e.g. created before v9/v10.6). Mirrors the Tenant model columns.
+        # Uses "ADD COLUMN IF NOT EXISTS" where supported (SQLite 3.35+, Postgres).
+        await conn.run_sync(_migrate_tenant_columns)
+
+
+def _migrate_tenant_columns(conn) -> None:
+    """Add any missing columns to the `tenants` table without dropping data."""
+    insp = __import__("sqlalchemy").inspect(conn)
+    try:
+        existing = {c["name"] for c in insp.get_columns("tenants")}
+    except Exception:
+        return
+    expected = {
+        "allowed_groups": "TEXT",
+        "system_prompt": "TEXT",
+        "lead_webhook_url": "TEXT",
+        "ingest_webhook_url": "TEXT",
+    }
+    dialect = conn.dialect.name
+    for col, coltype in expected.items():
+        if col not in existing:
+            if dialect == "postgresql":
+                conn.exec_driver_sql(f'ALTER TABLE tenants ADD COLUMN "{col}" {coltype} DEFAULT \'\'')
+            else:
+                # SQLite ignores the DEFAULT on ADD COLUMN but pre-fills NULL; app treats
+                # None as empty string, so this is safe for existing rows.
+                conn.exec_driver_sql(f"ALTER TABLE tenants ADD COLUMN {col} {coltype}")
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -330,6 +363,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "system_prompt": t.system_prompt or "",
                 "lead_webhook_url": t.lead_webhook_url or "",
+                "ingest_webhook_url": t.ingest_webhook_url or "",
             }
     else:
         async with session as s:
@@ -352,6 +386,7 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "system_prompt": t.system_prompt or "",
                 "lead_webhook_url": t.lead_webhook_url or "",
+                "ingest_webhook_url": t.ingest_webhook_url or "",
             }
 
 
@@ -805,3 +840,20 @@ async def get_lead_webhook_url(tenant_id: str, session: AsyncSession | None = No
     if not t:
         return None
     return t.get("lead_webhook_url")
+
+
+async def set_tenant_ingest_webhook(tenant_id: str, url: str, session: AsyncSession | None = None) -> bool:
+    """v10.6: persist an optional generic ingestion webhook URL (job callbacks)."""
+    async with (session or get_session_maker())() as s:
+        stmt = update(Tenant).where(Tenant.tenant_id == tenant_id).values(ingest_webhook_url=url)
+        res = await s.execute(stmt)
+        await s.commit()
+        return res.rowcount > 0
+
+
+async def get_ingest_webhook_url(tenant_id: str, session: AsyncSession | None = None) -> str | None:
+    """v10.6: return a tenant's ingestion webhook URL if configured."""
+    t = await get_tenant(tenant_id, session)
+    if not t:
+        return None
+    return t.get("ingest_webhook_url")

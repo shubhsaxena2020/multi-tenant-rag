@@ -112,6 +112,83 @@ def _validate_target(hostname: str) -> str:
     return ip
 
 
+def validate_url_for_egress(url: str, *, allow_private: bool = False, resolve: bool = True) -> tuple[str, str, int]:
+    """Validate a tenant-supplied outbound webhook/callback URL (SSRF guard).
+
+    Used for BOTH lead webhooks and generic ingestion webhooks so a tenant can never
+    aim our egress at an internal/metadata address (confused-deputy SSRF).
+
+    Hard checks (ALWAYS, regardless of allow_private): non-http(s) scheme, missing host,
+    internal-only hostnames (localhost / *.local / *.internal / …), literal blocked IP
+    ranges (RFC1918, link-local, cloud-metadata 169.254.169.254, …), and non-80/443 ports.
+
+    DNS-resolution check (only when resolve=True, i.e. DISPATCH time): resolve a public
+    hostname and reject any blocked address, then IP-pin for egress. Config time passes
+    resolve=False so a valid public hostname is accepted without a live lookup (the
+    authoritative check happens at dispatch, where egress actually occurs).
+
+    `allow_private` is a TEST-ONLY escape (WEBHOOK_ALLOW_PRIVATE): it alone permits a
+    literal loopback IP (127.0.0.1/::1) on any port, so a local callback server can be
+    used in the harness. Production keeps it False.
+
+    Returns (scheme, host_or_pinned_ip, port). Raises ValueError on any block.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("URL has no host")
+    if scheme not in _ALLOWED_SCHEMES:
+        raise ValueError(f"URL scheme must be one of {sorted(_ALLOWED_SCHEMES)}")
+
+    # Literal-IP host: check the blocked ranges directly (no DNS needed).
+    import ipaddress as _ip
+
+    is_literal_ip = False
+    try:
+        _ip_obj = _ip.ip_address(host)
+        is_literal_ip = True
+    except ValueError:
+        _ip_obj = None
+
+    if is_literal_ip:
+        # Loopback is permitted ONLY under allow_private (test server); blocked ranges
+        # (RFC1918, link-local, metadata 169.254.169.254, …) are never permitted. When a
+        # loopback IP is allowed, the port allowlist is also relaxed so a local callback
+        # server on an ephemeral port can receive events.
+        if _is_blocked(_ip_obj) and not (allow_private and _ip_obj.is_loopback):
+            raise ValueError(f"{host} is a blocked/internal address (SSRF guard)")
+        if not (allow_private and _ip_obj.is_loopback):
+            _validate_port(host, parsed.port)
+        port = parsed.port or (80 if scheme == "http" else 443)
+        return scheme, host, port
+
+    # Hostname host (and non-loopback literal IPs): port allowlist is the SSRF mitigation.
+    # It rejects scans of internal admin ports; relaxed only for loopback under allow_private.
+    # Internal-only hostnames are blocked even without DNS.
+    _validate_port(host, parsed.port)
+    if host == "localhost" or host.endswith((".local", ".internal", ".svc", ".cluster.local")):
+        raise ValueError(f"{host} is an internal-only hostname (SSRF guard)")
+
+    if resolve:
+        # Dispatch time: resolve + reject blocked ranges + IP-pin for egress.
+        try:
+            pinned_ip = _resolve_first_public_ip(host)
+        except ValueError as e:
+            raise ValueError(f"host not allowed (SSRF guard): {e}") from e
+        if _is_blocked(_ip.ip_address(pinned_ip)):
+            raise ValueError(f"{host} resolves to a blocked/internal address (SSRF guard)")
+        host_out = pinned_ip
+    else:
+        # Config time: accept the public hostname; dispatch re-validates + pins.
+        host_out = host
+
+    port = parsed.port or (80 if scheme == "http" else 443)
+    return scheme, host_out, port
+
+
 def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
     """Fetch a tenant-supplied URL with SSRF protections. Raises ValueError/HTTPException
     if the destination is not a safe public host, or httpx errors on transport failure.

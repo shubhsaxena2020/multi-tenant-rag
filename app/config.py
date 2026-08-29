@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # Per-tenant quotas (fleet protection). 0 disables.
     tenant_chunk_quota: int = 5_000_000
 
+    # Outbound webhooks (lead + generic ingestion callbacks). When False (default),
+    # egress is STRICTLY public-only — a tenant can never aim a webhook at localhost /
+    # RFC1918 / cloud-metadata (SSRF guard). Enable ONLY for local test harnesses.
+    webhook_allow_private: bool = False
+
     # Rate limiting (requests/min); 0 disables that dimension
     rate_per_tenant_per_min: int = 600
     rate_per_ip_per_min: int = 120

@@ -127,17 +127,18 @@ def test_lead_fires_webhook_best_effort(client, monkeypatch):
     t_worker = threading.Thread(target=srv.serve_forever, daemon=True)
     t_worker.start()
     try:
-        ok = asyncio.run(wh.dispatch_lead_webhook(
+        ok = wh.dispatch_lead_webhook(
             f"http://127.0.0.1:{port}/lead",
             {"lead_id": "lead_x", "email": "c@example.com"},
-        ))
+            t["tenant_id"],
+        )
         assert ok is True
         assert captured["path"] == "/lead"
         import json as _json
         assert _json.loads(captured["body"])["email"] == "c@example.com"
 
         # A failing webhook (bad host) must return False, never raise.
-        bad = asyncio.run(wh.dispatch_lead_webhook("http://127.0.0.1:1/lead", {"x": 1}))
+        bad = wh.dispatch_lead_webhook("http://127.0.0.1:1/lead", {"x": 1}, t["tenant_id"])
         assert bad is False
     finally:
         srv.shutdown()
