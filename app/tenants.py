@@ -59,8 +59,8 @@ async def create_tenant(
     return TenantRow(**data)
 
 
-async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret") -> None:
-    await _add_api_key(tenant_id, api_key, kind=kind)
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", expires_at=None) -> None:
+    await _add_api_key(tenant_id, api_key, kind=kind, expires_at=expires_at)
 
 
 async def revoke_api_key(tenant_id: str, key_prefix: str) -> int:

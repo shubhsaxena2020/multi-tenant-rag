@@ -51,6 +51,9 @@ class KeyInfo(BaseModel):
     created_at: str
     revoked: bool
     kind: str = "secret"  # "secret" (rk_*) or "publishable" (pk_*) — P1 #9
+    # v10.8: optional expiry. expires_at None = never expires; expired True if past it.
+    expires_at: str | None = None
+    expired: bool = False
 
 
 class TenantKeysOut(BaseModel):

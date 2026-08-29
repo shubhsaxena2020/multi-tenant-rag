@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 
 from sqlalchemy import (
     Boolean,
@@ -73,6 +73,10 @@ class TenantKey(Base):
     # A publishable key resolves to the SAME tenant_id (isolation is unchanged) but is
     # scope-locked to query endpoints by app/auth.py:require_secret_key.
     kind: Mapped[str] = mapped_column(String(16), default="secret", server_default="secret", nullable=False)
+    # v10.8: optional key expiry. NULL = never expires. Expired keys are rejected at
+    # resolution time (treated like revoked) so rotation + time-boxed keys are possible
+    # without manual revocation.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Job(Base):
@@ -165,6 +169,7 @@ async def init_db() -> None:
         # tenant DB (e.g. created before v9/v10.6). Mirrors the Tenant model columns.
         # Uses "ADD COLUMN IF NOT EXISTS" where supported (SQLite 3.35+, Postgres).
         await conn.run_sync(_migrate_tenant_columns)
+        await conn.run_sync(_migrate_tenant_keys_columns)
 
 
 def _migrate_tenant_columns(conn) -> None:
@@ -190,6 +195,22 @@ def _migrate_tenant_columns(conn) -> None:
                 # SQLite ignores the DEFAULT on ADD COLUMN but pre-fills NULL; app treats
                 # None as empty string, so this is safe for existing rows.
                 conn.exec_driver_sql(f"ALTER TABLE tenants ADD COLUMN {col} {coltype}")
+
+
+def _migrate_tenant_keys_columns(conn) -> None:
+    """v10.8: add `expires_at` to an existing `tenant_keys` table (NULL = never expires)."""
+    insp = __import__("sqlalchemy").inspect(conn)
+    try:
+        existing = {c["name"] for c in insp.get_columns("tenant_keys")}
+    except Exception:
+        return
+    if "expires_at" in existing:
+        return
+    dialect = conn.dialect.name
+    if dialect == "postgresql":
+        conn.exec_driver_sql('ALTER TABLE tenant_keys ADD COLUMN "expires_at" TIMESTAMP WITH TIME ZONE')
+    else:
+        conn.exec_driver_sql("ALTER TABLE tenant_keys ADD COLUMN expires_at TIMESTAMP")
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
@@ -245,10 +266,11 @@ async def create_tenant(
         }
 
 
-async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", session: AsyncSession | None = None) -> None:
+async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", expires_at: datetime | None = None, session: AsyncSession | None = None) -> None:
     """Add a secondary/rotated key for an existing tenant (hashed).
 
     P1 #9: `kind` = "secret" (full power, rk_*) or "publishable" (read-only, pk_*).
+    v10.8: `expires_at` (nullable) sets an optional key expiry; NULL = never expires.
     """
     now = datetime.now(UTC)
     async with (session or get_session_maker())() as s:
@@ -259,6 +281,7 @@ async def add_api_key(tenant_id: str, api_key: str, kind: str = "secret", sessio
             created_at=now,
             revoked=False,
             kind=kind,
+            expires_at=expires_at,
         )
         s.add(key)
         await s.commit()
@@ -305,25 +328,40 @@ async def revoke_api_key(tenant_id: str, key_prefix: str, session: AsyncSession 
 
 async def list_key_prefixes(tenant_id: str, session: AsyncSession | None = None) -> list[dict]:
     async with (session or get_session_maker())() as s:
+        now = datetime.now(UTC)
         stmt = (
-            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked, TenantKey.kind)
+            select(TenantKey.prefix, TenantKey.created_at, TenantKey.revoked,
+                   TenantKey.kind, TenantKey.expires_at)
             .where(TenantKey.tenant_id == tenant_id)
             .order_by(TenantKey.created_at.desc())
         )
         result = await s.execute(stmt)
         return [
-            {"prefix": r.prefix, "created_at": r.created_at.isoformat(),
-             "revoked": r.revoked, "kind": r.kind}
+            {
+                "prefix": r.prefix,
+                "created_at": r.created_at.isoformat(),
+                "revoked": r.revoked,
+                "kind": r.kind,
+                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
+                # SQLite returns naive datetimes; normalize both sides to UTC-aware for a
+                # safe comparison regardless of driver tz handling.
+                "expired": bool(
+                    r.expires_at
+                    and (r.expires_at.replace(tzinfo=timezone.utc) if r.expires_at.tzinfo is None else r.expires_at) <= now
+                ),
+            }
             for r in result.all()
         ]
 
 
 async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -> dict | None:
-    """Resolve tenant by raw API key (hash lookup)."""
+    """Resolve tenant by raw API key (hash lookup). Rejects revoked OR expired keys."""
     async with (session or get_session_maker())() as s:
+        now = datetime.now(UTC)
         stmt = select(TenantKey.tenant_id, TenantKey.kind).where(
             TenantKey.key_hash == _key_hash(api_key),
             TenantKey.revoked == False,
+            TenantKey.expires_at.is_(None) | (TenantKey.expires_at > now),
         )
         result = await s.execute(stmt)
         row = result.first()
@@ -334,11 +372,13 @@ async def get_tenant_by_key(api_key: str, session: AsyncSession | None = None) -
 
 
 async def get_key_kind(api_key: str, session: AsyncSession | None = None) -> str | None:
-    """P1 #9: return key tier ('secret' | 'publishable') or None if unknown/revoked."""
+    """P1 #9: return key tier ('secret' | 'publishable') or None if unknown/revoked/expired."""
     async with (session or get_session_maker())() as s:
+        now = datetime.now(UTC)
         stmt = select(TenantKey.kind).where(
             TenantKey.key_hash == _key_hash(api_key),
             TenantKey.revoked == False,
+            TenantKey.expires_at.is_(None) | (TenantKey.expires_at > now),
         )
         result = await s.execute(stmt)
         kind = result.scalar_one_or_none()

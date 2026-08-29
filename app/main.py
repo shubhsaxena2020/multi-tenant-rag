@@ -17,7 +17,7 @@ import time
 import uuid
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from . import jobs as job_store
@@ -1114,14 +1114,27 @@ def query_stream(
 
 
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def rotate_api_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
-    """Issue a new API key for this tenant. The old key remains valid until revoked."""
+async def rotate_api_key(
+    tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key),
+    expires_in_days: int | None = Query(None, ge=1, le=3650, description="v10.8: optional key expiry (days). Omit = never expires."),
+):
+    """Issue a new API key for this tenant. The old key remains valid until revoked.
+
+    v10.8: pass `expires_in_days` to mint a time-boxed key (e.g. short-lived integration
+    tokens). Expired keys are rejected at resolution time, so rotation + expiry give
+    self-service, leak-resistant key hygiene without operator involvement.
+    """
     rate_limit(request, auth.tenant_id)
     new_key = generate_api_key()
-    await tenants.add_api_key(auth.tenant_id, new_key)
+    expires_at = None
+    if expires_in_days:
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+    await tenants.add_api_key(auth.tenant_id, new_key, expires_at=expires_at)
     await audit_event(
         "key.rotate", actor=auth.tenant_id, target=auth.tenant_id,
-        meta={"prefix": new_key[:8]},
+        meta={"prefix": new_key[:8], "expires_in_days": expires_in_days},
     )
     # return only the new key (shown once) alongside tenant info
     return TenantOut(
@@ -1151,19 +1164,28 @@ async def revoke_key(tenant: str, prefix: str, auth: TenantDep, request: Request
 
 
 @v1.post("/{tenant}/keys/publishable", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-async def create_publishable_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+async def create_publishable_key(
+    tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key),
+    expires_in_days: int | None = Query(None, ge=1, le=3650, description="v10.8: optional key expiry (days). Omit = never expires."),
+):
     """P1 #9: mint a read-only key (pk_*) safe to embed client-side in the widget.
 
     The publishable key resolves to the SAME tenant (isolation unchanged) but is
     scope-locked to query endpoints by require_secret_key(); it cannot ingest, delete,
     rotate, or revoke. A tenant may hold any number of publishable keys plus secret keys.
+    v10.8: `expires_in_days` mints a time-boxed publishable key.
     """
     rate_limit(request, auth.tenant_id)
     new_key = generate_publishable_key()
-    await tenants.add_api_key(auth.tenant_id, new_key, kind="publishable")
+    expires_at = None
+    if expires_in_days:
+        from datetime import datetime, timedelta, timezone
+
+        expires_at = datetime.now(timezone.utc) + timedelta(days=expires_in_days)
+    await tenants.add_api_key(auth.tenant_id, new_key, kind="publishable", expires_at=expires_at)
     await audit_event(
         "key.create_publishable", actor=auth.tenant_id, target=auth.tenant_id,
-        meta={"prefix": new_key[:8]},
+        meta={"prefix": new_key[:8], "expires_in_days": expires_in_days},
     )
     return TenantOut(
         tenant_id=auth.tenant_id, name=auth.name, api_key=new_key,
