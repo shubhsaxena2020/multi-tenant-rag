@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     # VPS fleet enforces a single global per-tenant/per-IP budget. Empty = in-memory.
     redis_url: str = ""
 
+    # Job queue backend configuration (v9-5)
+    # Controls the backend used for job queueing across replicas.
+    # Options: "inline" (default, single-replica), "redis", "rq", "celery"
+    # When using external backends, configure the corresponding connection URL.
+    job_queue_backend: str = "inline"
+    job_queue_connection: str = ""  # e.g. Redis URL when backend is "redis"
+
     # Trusted reverse-proxy CIDRs. X-Forwarded-For is ONLY trusted when the immediate
     # connection comes from one of these (otherwise a client can spoof it and bypass IP
     # throttling). Empty = never trust XFF (use the real socket peer). Example:

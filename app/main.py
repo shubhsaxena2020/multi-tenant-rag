@@ -898,7 +898,12 @@ async def create_ingest_job(tenant: str, body: IngestJobRequest, auth: TenantDep
             detail="ingest job rate limit exceeded (per tenant, per minute)",
             headers={"Retry-After": str(retry)},
         )
-    kind = body.kind
+    # Auto-infer kind from the field that is actually present in the body
+    # (model defaults kind="text", but senders may only provide one field)
+    has_url = body.url is not None
+    has_text = body.text is not None
+    has_content = body.content is not None
+    kind = "url" if has_url else ("text" if has_text else ("document" if has_content else body.kind))
     title = body.title
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
     if kind == "url":

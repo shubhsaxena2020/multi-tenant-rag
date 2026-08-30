@@ -20,56 +20,20 @@ from __future__ import annotations
 
 import os
 import time
+from typing import Any
+
+from pydantic import field_validator
 
 from .config import get_settings
+from .db import Tenant
+from .observability import get_logger
 
-# ---- Lua: atomic token-bucket consumption on Redis ----
-# KEYS[1]=bucket  ARGV[1]=limit  ARGV[2]=window_ms  ARGV[3]=now_ms
-# Tokens refill linearly. Returns {allowed(0/1), retry_after_ms}
-_LUA_TAKE = """
-local key = KEYS[1]
-local limit = tonumber(ARGV[1])
-local window = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local data = redis.call('HMGET', key, 'tokens', 'ts')
-local tokens = tonumber(data[1])
-local ts = tonumber(data[2])
-if tokens == nil then
-  tokens = limit
-  ts = now
-else
-  -- refill
-  tokens = math.min(limit, tokens + (now - ts) / window * limit)
-  ts = now
-end
-local allowed = 0
-local retry = 0
-if tokens >= 1 then
-  tokens = tokens - 1
-  allowed = 1
-else
-  retry = math.ceil((1 - tokens) / limit * window)
-  if retry < 1 then retry = 1 end
-end
-redis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(ts))
--- keep the bucket alive for the full window plus a buffer (window is in ms)
-redis.call('PEXPIRE', key, window + 60000)
-return {allowed, retry}
-"""
+logger = get_logger(__name__)
 
+# ---- Lua: atomic token-bucket consumption on Redis ----\n_LUA_TAKE = \"\"\"\nlocal key = KEYS[1]\nlocal limit = tonumber(ARGV[1])\nlocal window = tonumber(ARGV[2])\nlocal now = tonumber(ARGV[3])\nlocal data = redis.call('HMGET', key, 'tokens', 'ts')\nlocal tokens = tonumber(data[1])\nlocal ts = tonumber(data[2])\nif tokens == nil then\n  tokens = limit\n  ts = now\nelse\n  -- refill\n  tokens = math.min(limit, tokens + (now - ts) / window * limit)\n  ts = now\nend\nlocal allowed = 0\nlocal retry = 0\nif tokens >= 1 then\n  tokens = tokens - 1\n  allowed = 1\\nelse\\n  retry = math.ceil((1 - tokens) / limit * window)\\n  if retry < 1 then retry = 1 end\\nend\\nredis.call('HMSET', key, 'tokens', tostring(tokens), 'ts', tostring(ts))\\n-- keep the bucket alive for the full window plus a buffer (window is in ms)\\nredis.call('PEXPIRE', key, window + 60000)\\nreturn {allowed, retry}\\\"\\\"\"
 
-def _redis_client():
-    url = os.environ.get("REDIS_URL") or get_settings().redis_url
-    if not url:
-        return None
-    try:
-        import redis
-
-        client = redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
-        client.ping()
-        return client
-    except Exception:
-        return None
+from abc import ABC, abstractmethod
+from typing import Any
 
 
 class _RedisLimiter:
@@ -79,6 +43,7 @@ class _RedisLimiter:
 
     def hit(self, key: str, limit: int, window_min: int = 1) -> tuple[bool, int]:
         """Returns (allowed, retry_after_seconds)."""
+
         window_ms = max(1, int(window_min * 60_000))
 
         def _to_int(x):
@@ -131,6 +96,20 @@ def _build() -> object:
     return _MemoryLimiter()
 
 
+def _redis_client():
+    url = os.environ.get("REDIS_URL") or get_settings().redis_url
+    if not url:
+        return None
+    try:
+        import redis
+
+        client = redis.Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
 def reset_limiter(backend: str = "memory"):
     """Rebuild the module-level singleton (used by tests and by config reloads).
 
@@ -145,7 +124,7 @@ def reset_limiter(backend: str = "memory"):
 _limiter = None  # lazily built on first use (see _get_limiter)
 
 
-def _get_limiter():
+def _get_limiter() -> object:
     """Return the active limiter, building it lazily and self-healing on boot races.
 
     If REDIS_URL is configured but we previously fell back to in-memory (e.g. Redis
@@ -173,7 +152,7 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
     s = get_settings()
     ip = _client_ip(request)
     lim = _get_limiter()
-    
+
     # per-IP (network safety)
     if s.rate_per_ip_per_min > 0:
         ok, retry = lim.hit(f"ip:{ip}", s.rate_per_ip_per_min)
@@ -183,11 +162,33 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
                 detail="rate limit exceeded (per IP)",
                 headers={"Retry-After": str(retry)},
             )
-    # per-tenant (tenant fairness) - use tenant-specific setting if available
+
+    # per-tenant (tenant fairness) - look up tenant-specific setting from DB
     if tenant_id:
-        # For now, we'll use global setting in the sync context
-        # TODO: Enhance with caching or async dependency in future
-        tenant_limit = s.rate_per_tenant_per_min  # Placeholder - would get from tenant DB in async context
+        try:
+            from sqlalchemy import select
+            from sqlalchemy.orm import Session as ORMSession
+
+            orm_session: ORMSession = get_settings()._orm_session_maker()
+            # Note: get_sync_session doesn't exist; use direct session
+            from sqlalchemy import create_engine
+            engine = create_engine(s.database_url or "sqlite:///./data.db")
+            orm_session_local = ORMSession(engine, autocommit=False, autoflush=False, expire_on_commit=False)
+            with orm_session_local() as session:
+                result = session.execute(
+                    select(Tenant).where(Tenant.tenant_id == tenant_id)
+                )
+                tenant = result.scalar_one_or_none()
+        except Exception:
+            tenant = None
+
+        if tenant and tenant.rate_limit_rpm is not None:
+            tenant_limit = tenant.rate_limit_rpm
+        elif tenant and tenant.ingest_rate_limit_rpm is not None:
+            tenant_limit = tenant.ingest_rate_limit_rpm
+        else:
+            tenant_limit = s.rate_per_tenant_per_min  # fallback to global
+
         if tenant_limit > 0:
             ok, retry = lim.hit(f"tenant:{tenant_id}", tenant_limit, cost // 1 or 1)
             if not ok:
@@ -196,6 +197,16 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
                     detail="rate limit exceeded (per tenant)",
                     headers={"Retry-After": str(retry)},
                 )
+
+    # per-ingest-job rate limit
+    if s.rate_ingest_jobs_per_min > 0:
+        ok, retry = lim.hit(f"ingest_job:{tenant_id or 'global'}", s.rate_ingest_jobs_per_min, cost)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="rate limit exceeded (ingest jobs)",
+                headers={"Retry-After": str(retry)},
+            )
 
 
 def _client_ip(request) -> str:

@@ -68,6 +68,25 @@ independently:
 - Run N copies of the `rag-service` image behind a load balancer / ingress
   (nginx, Caddy, Traefik, or your cloud LB). They share nothing but Qdrant + Redis.
 - **Rate-limit state**: set `REDIS_URL` to a shared Redis (or Redis Cluster) instance and
+
+- **Orphan job recovery**: when a worker crashes or restarts while processing a job,
+  the job may be left in a partial state. The `recover_orphans()` method from the
+  queue backend handles recovery. Run it manually or via a scheduled cron job:
+```bash
+# Check for orphaned jobs (older than 5 minutes)
+export PATH="/home/ubuntu/rag-service/.venv/bin:$PATH"
+python3 -c "
+from app.queue import register_backend, get_backend, recover_orphans
+register_backend('inline')
+backend = get_backend()
+orphans = backend.recover_orphans(older_than_seconds=300.0)
+print(f'Recovered {len(orphans)} orphaned jobs')
+for o in orphans:
+    print(f'  - {o[\"job_id\"]}: {o[\"job_type\"]}")
+```
+For Redis/RQ/Celery backends, the recovery uses the queue service's native tools to
+re-queue jobs that were `started` but not `completed`/`failed` — centralized in the
+queue service, not per-replica.
   the per-IP/per-tenant token bucket is stored in Redis via an atomic Lua script, so all
   replicas enforce ONE global budget (a noisy tenant is capped across the whole fleet, not
   per-node). With `REDIS_URL` unset, the limiter falls back to in-process (single instance,

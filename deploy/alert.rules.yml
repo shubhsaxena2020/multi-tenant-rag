@@ -89,3 +89,53 @@ groups:
         annotations:
           summary: "RAG ingestion failure rate > 10%"
           description: "{{ $value | humanizePercentage }} of ingestion jobs failed in the last 10m."
+
+      # No-answer rate: queries returning safe no-answer (unanswerable/out-of-scope)
+      # Threshold: > 20% of queries over 10m window indicates potential knowledge gap or
+      # prompt issue. Investigate retrieval quality and embedder suitability.
+      - alert: RAGNoAnswerHighRate
+        expr: |
+          sum(rate(rag_no_answer_total[10m]))
+          /
+          sum(rate(rag_requests_total[10m])) by (method, path) > 0.2
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RAG no-answer rate > 20% (10m)"
+          description: "{{ $value | humanizePercentage }} of queries returned no-answer over last 10m — investigate retrieval quality, embedder suitability, or prompt design."
+
+      # Faithfulness quality regression
+      - alert: RAGFaithfulnessLowRate
+        expr: |
+          histogram_quantile(0.5, sum(rate(rag_faithfulness_score_bucket[10m])) by (le)) < 0.5
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RAG faithfulness median below 0.5 (10m)"
+          description: "{{ $value }} of queries have faithfulness < 0.5 over last 10m — investigate retrieval quality, context relevance, or answer grounding."
+
+      # Rewrite usage anomaly
+      - alert: RAGRewriteStuckRate
+        expr: |
+          sum(rate(rag_rewrite_used_total[10m])) by (method) > 0.8
+          /
+          sum(rate(rag_requests_total[10m])) by (method) > 0.8
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: "RAG rewrite used on >80% of queries (10m)"
+          description: "{{ $value | humanizePercentage }} of queries used rewrite over last 10m — investigate prompt design or whether rewrite is adding value."
+
+      # No-response / timeout rate
+      - alert: RAGNoResponseRate
+        expr: |
+          sum(rate(rag_no_response_total[10m])) / sum(rate(rag_requests_total[10m])) > 0.15
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "RAG no-response rate > 15% (10m)"
+          description: "{{ $value | humanizePercentage }} of queries returned no response over last 10m — investigate backend timeouts, Qdrant latency, or rerank bottlenecks."
