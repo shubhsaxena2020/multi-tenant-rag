@@ -104,6 +104,30 @@ async def get_tenant(tenant_id: str) -> TenantRow | None:
     return TenantRow(**data)
 
 
+async def get_tenant_rate_limit(tenant_id: str) -> int | None:
+    """Get tenant-specific rate limit (requests/min), returns None if not set."""
+    data = await _get_tenant(tenant_id)
+    if data is None:
+        return None
+    return data.get("rate_limit_rpm")
+
+
+async def get_tenant_ingest_rate_limit(tenant_id: str) -> int | None:
+    """Get tenant-specific ingest job rate limit (jobs/min), returns None if not set."""
+    data = await _get_tenant(tenant_id)
+    if data is None:
+        return None
+    return data.get("ingest_rate_limit_rpm")
+
+
+async def get_tenant_chunk_quota(tenant_id: str) -> int | None:
+    """Get tenant-specific chunk quota, returns None if not set."""
+    data = await _get_tenant(tenant_id)
+    if data is None:
+        return None
+    return data.get("chunk_quota")
+
+
 async def list_tenants() -> list[TenantRow]:
     data = await _list_tenants()
     return [TenantRow(**d) for d in data]
