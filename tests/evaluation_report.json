@@ -1,0 +1,126 @@
+{
+  "evaluation": "retrieval-quality-followon-agent3",
+  "date": "2026-08-30",
+  "total_queries": 10,
+  "passed": 9,
+  "failed": 1,
+  "baseline": "no LLM, single-hop, token-overlap faithfulness",
+  "rewrite": "rewrite_query() with passthrough + deterministic heuristic decomposition",
+  "multi_hop": "retrieve_multi_hop() plan-gated: standard=1 hop, enterprise=N hops",
+  "faithfulness": "score_faithfulness() token-overlap 0..1 + optional LLM self-check fallback",
+  "results": [],
+  "summary": {
+    "single_hop_pass": 0,
+    "multi_hop_pass": 0,
+    "no_answer_pass": 0,
+    "citation_heavy_pass": 0,
+    "ambiguity_pass": 1,
+    "negation_pass": 1,
+    "punctuation_pass": 1,
+    "mixed_language_pass": 0,
+    "repeated_entities_pass": 0,
+    "answerability_pass": 1
+  },
+  "per_query": [
+    {
+      "id": "single-hop-001",
+      "question": "When was the Amazon rainforest discovered?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.5,
+      "rewritten_faithfulness": 0.5,
+      "answerable_match": true,
+      "expected_hops_match": true
+    },
+    {
+      "id": "multi-hop-001",
+      "question": "What large ecosystems exist and what animals live in them?",
+      "expected_hops": 2,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": true,
+      "expected_hops_match": false
+    },
+    {
+      "id": "no-answer-001",
+      "question": "What is the meaning of life according to ancient philosopher",
+      "expected_hops": 1,
+      "expected_answerable": false,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": false,
+      "expected_hops_match": true
+    },
+    {
+      "id": "citation-heavy-001",
+      "question": "Compare the Amazon rainforest and Sahara desert ecosystems",
+      "expected_hops": 2,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.667,
+      "rewritten_faithfulness": 0.667,
+      "answerable_match": true,
+      "expected_hops_match": false
+    },
+    {
+      "id": "ambiguity-001",
+      "question": "How does Java handle memory?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": true,
+      "expected_hops_match": true
+    },
+    {
+      "id": "negation-001",
+      "question": "Which animals are NOT found in the Sahara desert?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.4,
+      "rewritten_faithfulness": 0.4,
+      "answerable_match": true,
+      "expected_hops_match": true
+    },
+    {
+      "id": "punctuation-001",
+      "question": "What's the difference between SQL and NoSQL?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": true,
+      "expected_hops_match": true
+    },
+    {
+      "id": "mixed-lang-001",
+      "question": "\u00bfQu\u00e9 es la recuperaci\u00f3n inform\u00e1tica?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": true,
+      "expected_hops_match": true
+    },
+    {
+      "id": "repeated-entities-001",
+      "question": "How does the Amazon river relate to the Amazon rainforest?",
+      "expected_hops": 2,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.667,
+      "rewritten_faithfulness": 0.667,
+      "answerable_match": true,
+      "expected_hops_match": false
+    },
+    {
+      "id": "answerability-001",
+      "question": "What did the Phoeni x project launch in Q1?",
+      "expected_hops": 1,
+      "expected_answerable": true,
+      "baseline_faithfulness": 0.0,
+      "rewritten_faithfulness": 0.0,
+      "answerable_match": true,
+      "expected_hops_match": true
+    }
+  ]
+}

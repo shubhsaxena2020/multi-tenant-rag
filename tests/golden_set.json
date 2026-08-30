@@ -1,0 +1,106 @@
+[
+  {
+    "id": "single-hop-001",
+    "question": "When was the Amazon rainforest discovered?",
+    "expected_evidence": [
+      "Amazon rainforest discovered"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.6
+  },
+  {
+    "id": "multi-hop-001",
+    "question": "What large ecosystems exist and what animals live in them?",
+    "expected_evidence": [
+      "Amazon rainforest",
+      "Sahara desert"
+    ],
+    "expected_hops": 2,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "no-answer-001",
+    "question": "What is the meaning of life according to ancient philosophers?",
+    "expected_evidence": [],
+    "expected_hops": 1,
+    "expected_answerable": false,
+    "expected_faithfulness_threshold": 0.0
+  },
+  {
+    "id": "citation-heavy-001",
+    "question": "Compare the Amazon rainforest and Sahara desert ecosystems",
+    "expected_evidence": [
+      "Amazon rainforest",
+      "Sahara desert"
+    ],
+    "expected_hops": 2,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "ambiguity-001",
+    "question": "How does Java handle memory?",
+    "expected_evidence": [
+      "Java memory management"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5,
+    "note": "Disambiguation needed: Java the language vs Java the island"
+  },
+  {
+    "id": "negation-001",
+    "question": "Which animals are NOT found in the Sahara desert?",
+    "expected_evidence": [
+      "Sahara desert animals"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "punctuation-001",
+    "question": "What's the difference between SQL and NoSQL?",
+    "expected_evidence": [
+      "SQL",
+      "NoSQL"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "mixed-lang-001",
+    "question": "\u00bfQu\u00e9 es la recuperaci\u00f3n inform\u00e1tica?",
+    "expected_evidence": [
+      "recuperaci\u00f3n inform\u00e1tica",
+      "retrieval"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "repeated-entities-001",
+    "question": "How does the Amazon river relate to the Amazon rainforest?",
+    "expected_evidence": [
+      "Amazon river",
+      "Amazon rainforest"
+    ],
+    "expected_hops": 2,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "answerability-001",
+    "question": "What did the Phoeni x project launch in Q1?",
+    "expected_evidence": [
+      "Phoenix project"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.6
+  }
+]
