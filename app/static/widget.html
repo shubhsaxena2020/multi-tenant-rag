@@ -228,7 +228,7 @@ function addMsg(cls, text, sources, opts) {
     sources.forEach(function (s, i) {
       var href = citationHref(s);
       var a = el("a", "cite");
-      a.textContent = "[" + (i + 1) + "] " + (s.title || "source");
+a.textContent = "[" + (i + 1) + "] " + escapeText(s.title || "source");
       if (href) { a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; a.title = s.url || "Open source"; }
       else { a.removeAttribute("href"); a.title = "source"; }
       wrap.appendChild(a);
