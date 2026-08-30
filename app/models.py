@@ -51,6 +51,10 @@ class TenantOut(BaseModel):
     allowed_groups: list[str] = ["*"]
     branding: dict = {}
     system_prompt: str = ""
+    # PHASE I: per-tenant rate limit overrides
+    rate_limit_rpm: int | None = None
+    ingest_rate_limit_rpm: int | None = None
+    chunk_quota: int | None = None
 
 
 class TenantSystemPromptIn(BaseModel):
