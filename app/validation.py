@@ -54,7 +54,14 @@ def parse_json_field(raw: str | None) -> dict:
 
 
 def parse_acl_field(raw: str | None) -> list[str] | None:
-    """Parse an optional JSON-array form field into a list of groups (None if absent)."""
+    """Parse an optional JSON-array form field into a list of groups (None if absent).
+
+    Deny-by-default hardening:
+    - raw=None → None (key omitted, ACL defaults to public-only later)
+    - wildcard "*" anywhere in the list → 422 rejection (prevent implicit-all-groups)
+    - empty list [] → 422 rejection (deny-by-default: operator must explicitly allow groups)
+    - any non-string element → 422 rejection
+    """
     if raw is None:
         return None
     import json
@@ -63,6 +70,14 @@ def parse_acl_field(raw: str | None) -> list[str] | None:
         val = json.loads(raw)
     except Exception:
         raise HTTPException(status_code=422, detail="acl must be a JSON array of strings")
-    if not isinstance(val, list) or not all(isinstance(g, str) for g in val):
+    if not isinstance(val, list):
+        raise HTTPException(status_code=422, detail="acl must be a JSON array of strings")
+    # Deny wildcard " * " — prevents implicit-all-groups access
+    if any(g == "*" for g in val):
+        raise HTTPException(status_code=422, detail="acl must not contain wildcard '*'")
+    # Deny empty list — operator must explicitly allow groups
+    if len(val) == 0:
+        raise HTTPException(status_code=422, detail="acl must contain at least one group")
+    if not all(isinstance(g, str) for g in val):
         raise HTTPException(status_code=422, detail="acl must be a JSON array of strings")
     return val

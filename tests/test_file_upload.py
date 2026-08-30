@@ -141,6 +141,26 @@ def test_upload_pdf_without_parser_surfaces_clear_400(client, monkeypatch):
     assert "pypdf" in r.text.lower()
 
 
+def test_upload_pdf_parse_failure_is_sanitized(client, monkeypatch):
+    """Parser errors should not echo low-level exception text back to clients."""
+    import sys
+    import types
+
+    t = _make_tenant(client)
+    auth = _auth(t["api_key"])
+
+    class _BoomReader:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("internal parser bomb /tmp/secret")
+
+    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_BoomReader))
+    r = _upload(client, auth, "doc.pdf", _pdf_bytes())
+    assert r.status_code == 400, r.text
+    assert "internal parser bomb" not in r.text
+    assert "/tmp/secret" not in r.text
+    assert "RuntimeError" not in r.text
+
+
 def _client():
     from app.main import app
 
