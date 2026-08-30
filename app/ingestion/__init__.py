@@ -204,6 +204,8 @@ async def ingest_url(
     tenant_id: str, url: str, title: str | None = None,
     metadata: dict | None = None, on_progress: Callable[[int, int], None] | None = None,
     acl: list[str] | None = None,
+    doc_key: str | None = None,
+    source_url: str | None = None,
 ) -> dict:
     raw = fetch_url(url)
     from .html_util import html_to_text
@@ -213,5 +215,6 @@ async def ingest_url(
     base_meta.setdefault("source_url", url)
     return await ingest_core(
         tenant_id, title or url, text, "html", base_meta, on_progress, acl,
-        doc_key=doc_key_for_url(url), source_url=url,
+        doc_key=doc_key_for_url(url) if doc_key is None else doc_key,
+        source_url=source_url or url,
     )

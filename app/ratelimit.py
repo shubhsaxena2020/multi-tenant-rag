@@ -165,7 +165,7 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
     Raises 429 with Retry-After on the first exceeded dimension. `cost` lets an
     expensive operation (e.g. large ingest) consume more than one token.
     """
-    from fastapi import (  # local import keeps module importable in tests
+    from fastapi import (
         HTTPException,
         status,
     )
@@ -173,6 +173,7 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
     s = get_settings()
     ip = _client_ip(request)
     lim = _get_limiter()
+    
     # per-IP (network safety)
     if s.rate_per_ip_per_min > 0:
         ok, retry = lim.hit(f"ip:{ip}", s.rate_per_ip_per_min)
@@ -182,15 +183,19 @@ def rate_limit(request, tenant_id: str | None = None, cost: int = 1):
                 detail="rate limit exceeded (per IP)",
                 headers={"Retry-After": str(retry)},
             )
-    # per-tenant (tenant fairness)
-    if tenant_id and s.rate_per_tenant_per_min > 0:
-        ok, retry = lim.hit(f"tenant:{tenant_id}", s.rate_per_tenant_per_min, cost // 1 or 1)
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="rate limit exceeded (per tenant)",
-                headers={"Retry-After": str(retry)},
-            )
+    # per-tenant (tenant fairness) - use tenant-specific setting if available
+    if tenant_id:
+        # For now, we'll use global setting in the sync context
+        # TODO: Enhance with caching or async dependency in future
+        tenant_limit = s.rate_per_tenant_per_min  # Placeholder - would get from tenant DB in async context
+        if tenant_limit > 0:
+            ok, retry = lim.hit(f"tenant:{tenant_id}", tenant_limit, cost // 1 or 1)
+            if not ok:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="rate limit exceeded (per tenant)",
+                    headers={"Retry-After": str(retry)},
+                )
 
 
 def _client_ip(request) -> str:

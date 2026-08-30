@@ -53,6 +53,12 @@ class Tenant(Base):
     # end-user input), so it is the system's own instruction surface, not subject to the
     # user-input injection filtering owned by the parallel P0/P1 security session. Empty = default.
     system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # PHASE I: per-tenant rate limit overrides (requests/min). NULL = use global default.
+    rate_limit_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PHASE I: per-tenant ingest job rate limit (jobs/min). NULL = use global default.
+    ingest_rate_limit_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # PHASE I: per-tenant chunk quota override. NULL = use global default.
+    chunk_quota: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class TenantKey(Base):
@@ -193,6 +199,8 @@ async def init_db() -> None:
             ("tenants", "branding", "TEXT"),
             ("tenants", "system_prompt", "TEXT"),
             ("tenants", "allowed_groups", "TEXT"),
+            ("tenants", "rate_limit_rpm", "INTEGER"),
+            ("tenants", "ingest_rate_limit_rpm", "INTEGER"),
         ]
         await _run_add_column_migrations(conn, migrations)
 
@@ -260,6 +268,9 @@ async def create_tenant(
     allowed_groups: list[str] | None = None,
     branding: dict | None = None,
     system_prompt: str = "",
+    rate_limit_rpm: int | None = None,
+    ingest_rate_limit_rpm: int | None = None,
+    chunk_quota: int | None = None,
     session: AsyncSession | None = None,
 ) -> dict:
     """Create a new tenant with initial API key. Returns tenant dict."""
@@ -276,6 +287,9 @@ async def create_tenant(
             allowed_groups=json.dumps(groups),
             branding=json.dumps(branding or {}),
             system_prompt=system_prompt or "",
+            rate_limit_rpm=rate_limit_rpm,
+            ingest_rate_limit_rpm=ingest_rate_limit_rpm,
+            chunk_quota=chunk_quota,
         )
         s.add(tenant)
         key = TenantKey(
@@ -298,6 +312,9 @@ async def create_tenant(
             "allowed_groups": groups,
             "branding": _parse_json(tenant.branding, {}),
             "system_prompt": tenant.system_prompt or "",
+            "rate_limit_rpm": tenant.rate_limit_rpm,
+            "ingest_rate_limit_rpm": tenant.ingest_rate_limit_rpm,
+            "chunk_quota": tenant.chunk_quota,
         }
 
 
@@ -451,6 +468,9 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
+                "rate_limit_rpm": t.rate_limit_rpm,
+                "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
+                "chunk_quota": t.chunk_quota,
             }
     else:
         async with session as s:
@@ -473,6 +493,9 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
+                "rate_limit_rpm": t.rate_limit_rpm,
+                "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
+                "chunk_quota": t.chunk_quota,
             }
 
 
@@ -491,6 +514,9 @@ async def list_tenants(session: AsyncSession | None = None) -> list[dict]:
                 "branding": _json_loads_or(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
                 "allowed_groups": _json_loads_or(t.allowed_groups, ["*"]),
+                "rate_limit_rpm": t.rate_limit_rpm,
+                "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
+                "chunk_quota": t.chunk_quota,
             }
             for t in result.scalars().all()
         ]
