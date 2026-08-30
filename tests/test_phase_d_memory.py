@@ -73,3 +73,21 @@ def test_unknown_session_returns_empty_turns(client):
     r = client.get(f"{V}/{t['tenant_id']}/session/never-created", headers=auth)
     assert r.status_code == 200, r.text
     assert r.json()["turns"] == [], r.json()
+
+
+def test_session_history_is_rate_limited(client, monkeypatch):
+    """Session-history reads should share the same tenant/IP throttle as other data-plane routes."""
+    from app.config import get_settings
+    from app.ratelimit import reset_limiter
+
+    t = _mk(client, "ratelimit")
+    auth = {"Authorization": f"Bearer {t['api_key']}"}
+
+    monkeypatch.setenv("RATE_PER_IP_PER_MIN", "1")
+    get_settings.cache_clear()
+    reset_limiter("memory")
+
+    first = client.get(f"{V}/{t['tenant_id']}/session/rl-check", headers=auth)
+    assert first.status_code == 200, first.text
+    second = client.get(f"{V}/{t['tenant_id']}/session/rl-check", headers=auth)
+    assert second.status_code == 429, second.text

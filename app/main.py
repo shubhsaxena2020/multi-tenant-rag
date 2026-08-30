@@ -1007,10 +1007,17 @@ async def widget_config(tenant: str, auth: TenantDep):
 
 
 @v1.get("/{tenant}/session/{session_id}", response_model=dict, status_code=status.HTTP_200_OK)
-async def session_history(tenant: str, session_id: str, auth: TenantDep, _: None = Depends(require_secret_key)):
+async def session_history(
+    tenant: str,
+    session_id: str,
+    auth: TenantDep,
+    request: Request,
+    _: None = Depends(require_secret_key),
+):
     """PHASE D (#31): return the stored multi-turn history for a session so the widget can
     replay prior context after a reload. Tenant-scoped (key resolves tenant; path tenant must
     match). Sessions are lazily created, so an unknown session returns empty turns (not 404)."""
+    rate_limit(request, auth.tenant_id)
     if auth.tenant_id != tenant:
         raise HTTPException(status_code=403, detail="tenant mismatch")
     store = get_session_store()

@@ -103,7 +103,7 @@ def extract_text(filename: str, data: bytes, ctype: str) -> tuple[str, str]:
     try:
         raw = data.decode("utf-8", errors="replace")
     except Exception as e:
-        raise ValueError(f"could not decode file as UTF-8 text: {e}") from e
+        raise ValueError("could not decode file as UTF-8 text") from e
     if ctype == "html":
         return _strip_html(raw), "html"
     # markdown / code / text: keep as-is (chunker handles whitespace). Preserve newlines.
@@ -129,7 +129,7 @@ def _extract_pdf(data: bytes) -> str:
                 pages.append("")
         text = "\n".join(pages).strip()
     except Exception as e:
-        raise ValueError(f"failed to parse PDF: {type(e).__name__}: {e}") from e
+        raise ValueError("failed to parse PDF") from e
     if not text:
         raise ValueError("PDF contained no extractable text (scanned/image PDF?)")
     return text
@@ -153,7 +153,7 @@ def _extract_docx(data: bytes) -> str:
                         parts.append(cell.text)
         return "\n".join(parts).strip()
     except Exception as e:
-        raise ValueError(f"failed to parse DOCX: {type(e).__name__}: {e}") from e
+        raise ValueError("failed to parse DOCX") from e
 
 
 def _strip_html(html: str) -> str:
