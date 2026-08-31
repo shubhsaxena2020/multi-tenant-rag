@@ -970,6 +970,9 @@ async def get_document(tenant: str, doc_id: str, auth: TenantDep, request: Reque
     """Fetch a document's full content (all chunks) for the hosted source viewer / citation
     deep-links (issue #6). Secret-key gated so a link can't expose another tenant's content."""
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     try:
         chunks = get_document_chunks(auth.tenant_id, doc_id)
     except Exception:
@@ -1191,6 +1194,9 @@ async def list_documents(
     page through a large catalog and know how many documents exist.
     """
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     from .db import count_documents, list_documents as _list_documents
 
     limit = max(1, min(limit, 1000))
@@ -1230,6 +1236,9 @@ async def upload_document(
     per-file doc_key), so it never duplicates.
     """
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     from .ingestion.files import detect_content_type, extract_text
 
     upload = file
