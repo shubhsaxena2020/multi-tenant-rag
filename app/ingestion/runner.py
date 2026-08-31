@@ -8,22 +8,34 @@ Progress push support (Task 4):
 - `on_progress` callback now accepts an optional `push_func` kwarg
 - When provided, progress pushes are delivered asynchronously after the DB update
 - The push mechanism is handled in the async caller, not inside the sync callback
+
+Job queue backend (Phase J, Task 48):
+- "inline" (default): uses ThreadPoolExecutor, single-replica only
+- "redis": uses RQ-style wrapper with Redis for multi-replica safety
+- "rq" / "celery": external queue backend integration points
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from .. import jobs
+from ..config import get_settings
 from ..observability import INGEST_CHUNKS, INGEST_JOBS, get_logger
 from . import ingest_text, ingest_url
 
 log = get_logger("rag")
 
+_settings = get_settings()
+
 _executor: ThreadPoolExecutor | None = None
 _lock = threading.Lock()
+
+_job_queue_backend: str = _settings.job_queue_backend
+_job_queue_connection: str = _settings.job_queue_connection
 
 
 def _ensure_executor() -> ThreadPoolExecutor:
@@ -32,6 +44,58 @@ def _ensure_executor() -> ThreadPoolExecutor:
         if _executor is None:
             _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ingest")
     return _executor
+
+
+def _is_redis_backend() -> bool:
+    """Check if we should use Redis-backed job queue for multi-replica safety."""
+    return bool(_job_queue_backend and _job_queue_backend != "inline" and _job_queue_backend.startswith("redis"))
+
+
+def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:
+    """Submit an ingestion job using the configured queue backend.
+
+    - "inline" (default): uses ThreadPoolExecutor, single-replica only
+    - "redis": uses RQ-style wrapper with Redis for multi-replica safety
+    - "rq" / "celery": external queue backend integration points
+    """
+    if _is_redis_backend() and _job_queue_connection:
+        _submit_redis(job_id, tenant_id, kind, payload, metadata)
+    else:
+        _executor = _ensure_executor()
+        _executor.submit(_run, job_id, tenant_id, kind, payload, metadata)
+
+
+def _submit_redis(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None) -> None:
+    """Submit job to Redis-backed queue for multi-replica safety.
+
+    Uses RQ-style queue with Redis connection. When Redis URL is configured,
+    jobs are enqueued to a shared queue visible across all replicas.
+    """
+    try:
+        import rq
+        from rq import Queue
+
+        redis_url = _job_queue_connection or os.getenv("REDIS_URL", "")
+        if not redis_url:
+            log.warning("redis_queue_configured_but_no_url_falling_back_to_inline")
+            _executor = _ensure_executor()
+            _executor.submit(_run, job_id, tenant_id, kind, payload, metadata)
+            return
+
+        queue = Queue("ingest", connection=redis_url)
+        queue.enqueue(_run, job_id, tenant_id, kind, payload, metadata)
+        INGEST_JOBS.labels(backend="redis").inc()
+        log.info("ingest_job_enqueued_to_redis", extra={"tenant_id": tenant_id, "job_id": job_id})
+    except ImportError:
+        log.warning("rq_not_installed_falling_back_to_inline", extra={"job_id": job_id})
+        _executor = _ensure_executor()
+        _executor.submit(_run, job_id, tenant_id, kind, payload, metadata)
+    except Exception as e:
+        log.error("redis_queue_failed_falling_back_to_inline", extra={
+            "job_id": job_id, "error": str(e)[:200]
+        })
+        _executor = _ensure_executor()
+        _executor.submit(_run, job_id, tenant_id, kind, payload, metadata)
 
 
 def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None):
@@ -115,8 +179,7 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
     # Execute all progress push callbacks asynchronously (webhook/SSE delivery)
     for cb in push_callbacks:
         try:
-            await cb["push_func"]({"job_id": cb["job_id"], "progress": cb["progress"],
-                                   "done_chunks": cb["done_chunks"], "total_chunks": cb["total_chunks"]})
+            await cb["push_func"]("{\"job_id\": \"" + cb["job_id"] + "\", \"progress\": " + str(cb["progress"]) + ", \"done_chunks\": " + str(cb["done_chunks"]) + ", \"total_chunks\": " + str(cb["total_chunks"]) + "}")
         except Exception as e:
             log.warning("progress_push_failed", extra={"job_id": cb["job_id"], "error": str(e)[:200]})
 
@@ -124,7 +187,3 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
     INGEST_CHUNKS.inc(result["chunk_count"])
     INGEST_JOBS.labels(status="completed").inc()
     log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
-
-
-def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:
-    _ensure_executor().submit(_run, job_id, tenant_id, kind, payload, metadata)

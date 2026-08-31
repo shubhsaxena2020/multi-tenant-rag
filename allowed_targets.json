@@ -1,0 +1,11 @@
+{
+  "version": "1.0",
+  "description": "Sentinel egress allowlist for rag-service — deny-by-default; only approved entries may be added after operator sign-off",
+  "generated_by": "agent-4",
+  "generated_at": "2026-08-31T00:00:00Z",
+  "targets": [
+    "https://tei-inference.example.com/embed",
+    "https://db.example.com",
+    "https://models.example.com"
+  ]
+}

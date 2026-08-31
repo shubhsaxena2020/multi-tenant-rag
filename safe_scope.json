@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/schema#",
+  "description": "Sentinel-safe scan scope for rag-service — operator-approved egress targets only",
+  "type": "object",
+  "properties": {
+    "version": {"type": "string", "enum": ["1.0"]},
+    "generated_by": {"type": "string", "description": "Operator or CI identifier"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "targets": {
+      "type": "array",
+      "description": "Explicitly allowed scan targets — deny-all-by-default; only entries below may be added after operator sign-off",
+      "items": {
+        "type": "object",
+        "properties": {
+          "host": {"type": "string", "format": "host"},
+          "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "description": {"type": "string"},
+          "verified_by_operator": {"type": "boolean", "description": "Set true after operator approval"}
+        },
+        "required": ["host", "port", "description"],
+        "additionalProperties": false
+      }
+    },
+    "ssrf_guidelines": {
+      "type": "object",
+      "properties": {
+        "allowed_schemes": {
+          "type": "array",
+          "items": {"type": "string"},
+          "enum": ["http", "https"]
+        },
+        "allowed_ports": {
+          "type": "array",
+          "items": {"type": "integer"},
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "blocked_categories": {
+          "type": "array",
+          "items": {"type": "string"},
+          "enum": ["loopback", "rfc1918", "link-local", "metadata-endpoint"]
+        }
+      },
+      "required": ["allowed_schemes", "allowed_ports", "blocked_categories"],
+      "additionalProperties": false
+    },
+    "cors_guidelines": {
+      "type": "object",
+      "properties": {
+        "allow_credentials": {"type": "boolean"},
+        "allow_origins": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Populated by operator; empty = deny-by-default"
+        },
+        "allow_methods": {"type": "string"},
+        "allow_headers": {"type": "string"}
+      },
+      "required": ["allow_credentials", "allow_origins", "allow_methods", "allow_headers"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["version", "generated_by", "generated_at", "targets", "ssrf_guidelines", "cors_guidelines"],
+  "additionalProperties": false
+}

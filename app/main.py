@@ -833,6 +833,9 @@ async def create_document(tenant: str, body: DocumentCreate, request: Request, a
 @v1.post("/{tenant}/ingest/url", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     meta = validate_metadata(body.metadata)
     acl = _resolved_acl(body.acl, auth, default_to_public=True)
     res = await ingest_url(auth.tenant_id, body.url, body.title, meta, acl=acl)
@@ -856,6 +859,9 @@ async def ingest_from_url(tenant: str, body: IngestUrl, auth: TenantDep, request
 @v1.post("/{tenant}/ingest/text", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def ingest_from_text(tenant: str, body: IngestText, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     validate_content(body.text)
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
@@ -988,6 +994,9 @@ async def get_document(tenant: str, doc_id: str, auth: TenantDep, request: Reque
 @v1.delete("/{tenant}/documents/{doc_id}", status_code=status.HTTP_200_OK)
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     # Drop the Qdrant vectors first (tenant-scoped), then remove the catalog/registry row so
     # the document disappears from GET /documents immediately (issue #12 accuracy fix).
     delete_document(auth.tenant_id, doc_id)
@@ -1021,8 +1030,14 @@ async def session_history(
 ):
     """PHASE D (#31): return the stored multi-turn history for a session so the widget can
     replay prior context after a reload. Tenant-scoped (key resolves tenant; path tenant must
-    match). Sessions are lazily created, so an unknown session returns empty turns (not 404)."""
+    match). Sessions are lazily created, so an unknown session returns empty turns (not 404).
+
+    Security (Issue #15): fail-closed on path-tenant vs key-tenant mismatch.
+    """
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    if tenant != auth.tenant_id:
+        raise HTTPException(status_code=404, detail="not found")
     if auth.tenant_id != tenant:
         raise HTTPException(status_code=403, detail="tenant mismatch")
     store = get_session_store()
