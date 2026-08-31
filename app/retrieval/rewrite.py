@@ -32,8 +32,12 @@ def _split_sentences(text: str) -> list[str]:
 def _heuristic_decompose(question: str) -> list[str]:
     """Deterministic, no-LLM decomposition for obvious multi-part questions.
 
-    Catches 'compare X and Y' / 'X vs Y' / 'difference between X and Y' shapes and returns the
-    two sides as sub-questions. Returns [] when the question is single-part.
+    Catches:
+      - 'compare X and Y' / 'compare X with Y' / 'compare X to Y'       -> [X?, Y?]
+      - 'X vs Y' / 'X difference Y'                                       -> [X?, Y?]
+      - 'X and Y and Z' / 'X, Y, Z' (3+ entities)                        -> [X?, Y?, Z?]
+      - Single-part questions                                              -> []
+    Returns [] when the question is single-part.
     """
     q = question.strip()
     m = re.search(r"\bcompare\s+(.+?)\s+(?:and|with|to)\s+(.+)$", q, re.IGNORECASE)
@@ -42,6 +46,14 @@ def _heuristic_decompose(question: str) -> list[str]:
     m = re.search(r"\b(.+?)\s+vs\.?\s+(.+)$", q, re.IGNORECASE)
     if m and len(q) < 120:
         return [f"{m.group(1).strip()}?", f"{m.group(2).strip()}?"]
+    # New: X and Y and Z (3+ entities)
+    m = re.search(r"^(.+?)\s+and\s+(.+?)\s+and\s+(.+)$", q, re.IGNORECASE)
+    if m:
+        return [f"{m.group(1).strip()}?", f"{m.group(2).strip()}?", f"{m.group(3).strip()}?"]
+    # New: comma-separated 3+ entities
+    m = re.search(r"^(.+?),\s+(.+?),\s+(.+?)$", q, re.IGNORECASE)
+    if m and len(q) < 150:
+        return [f"{m.group(1).strip()}?", f"{m.group(2).strip()}?", f"{m.group(3).strip()}?"]
     m = re.search(r"\bdifference\s+between\s+(.+?)\s+and\s+(.+)$", q, re.IGNORECASE)
     if m:
         return [f"What is {m.group(1).strip()}?", f"What is {m.group(2).strip()}?"]

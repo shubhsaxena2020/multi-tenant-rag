@@ -73,9 +73,9 @@
   },
   {
     "id": "mixed-lang-001",
-    "question": "\u00bfQu\u00e9 es la recuperaci\u00f3n inform\u00e1tica?",
+    "question": "¿Qué es la recuperación informática?",
     "expected_evidence": [
-      "recuperaci\u00f3n inform\u00e1tica",
+      "recuperación informática",
       "retrieval"
     ],
     "expected_hops": 1,
@@ -102,5 +102,27 @@
     "expected_hops": 1,
     "expected_answerable": true,
     "expected_faithfulness_threshold": 0.6
+  },
+  {
+    "id": "mixed-lang-002",
+    "question": "What is la recuperacion informatica? ",
+    "expected_evidence": [
+      "recuperacion informatica",
+      "retrieval"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
+  },
+  {
+    "id": "mixed-lang-003",
+    "question": "How does Java memory management compare with Python garbage collection? ",
+    "expected_evidence": [
+      "Java memory management",
+      "Python garbage collection"
+    ],
+    "expected_hops": 1,
+    "expected_answerable": true,
+    "expected_faithfulness_threshold": 0.5
   }
 ]
