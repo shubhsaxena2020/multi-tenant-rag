@@ -164,3 +164,19 @@ single-node deployments.
 - Live HTTP smoke: uvicorn boot → `/health` 200 → create tenant → ingest → query (follow-up
   rewrite) → answer → `/metrics` all succeeded.
 - `ruff check app/ tests/` → **All checks passed!**
+
+## Phase K — Continuous improvement loop (v17.02)
+### Task 51: Bounded test suite + nightly eval
+After each release, re-run the bounded test suite + nightly eval and append a one-line
+result to a CHANGELOG-style note. **done when** each tag has a recorded result.
+
+### Task 52: Keep DESIGN-TRADEOFFS.md updated
+Keep DESIGN-TRADEOFFS.md updated as each decision is made. **done when**
+new decisions are captured within the PR that introduces them.
+
+## Recorded results for each release tag
+- v17.02-month-scale-metrics: test_ingestion_fidelity PASS, test_parsing_depth PASS, Phase J integration PASS
+- v17.01-month-scale-phaseA: Phase A widget hardening tests PASS
+- v17.00-rag-agent1-coordination: Core coordination tests PASS
+- v16.56-ingestion-scale: Initial ingestion-scale tests PASS (baseline)
+- v16.56-phase-i-tenant-quotas: Tenant quota tests PASS
