@@ -11,7 +11,6 @@ unavailable or errors, we fall back to the deterministic score so the path never
 """
 
 from __future__ import annotations
-
 import re
 from typing import Iterable
 
@@ -24,9 +23,16 @@ _STOPWORDS = {
     "over", "under", "between", "both", "each", "more", "most", "other", "some", "such", "only",
 }
 
+def _normalize_token(t: str) -> str:
+    """Strip possessive 's and standardize common contractions for token overlap."""
+    # Strip trailing possessive 's (e.g., "dog's" -> "dog")
+    if t.endswith("'s"):
+        t = t[:-2]
+    return t
 
 def _tokens(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower()) if t not in _STOPWORDS and len(t) > 1]
+    raw_tokens = [t for t in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower()) if t not in _STOPWORDS and len(t) > 1]
+    return [_normalize_token(t) for t in raw_tokens]
 
 
 def is_refusal(answer: str | None) -> bool:
@@ -35,7 +41,7 @@ def is_refusal(answer: str | None) -> bool:
         return True
     low = answer.lower()
     markers = (
-        "i don't know", "i do not know", "i cannot", "i can't", "i can’t",
+        "i don't know", "i do not know", "i cannot", "i can't",
         "no information", "don't have information", "do not have information",
         "i'm sorry", "i am sorry", "unable to", "can't help", "cannot help",
     )
