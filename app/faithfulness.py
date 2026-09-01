@@ -106,6 +106,8 @@ def score_faithfulness(
     - Empty / refusal answer -> (0.0, False).
     - Otherwise a deterministic token-overlap score, optionally nudged by an LLM self-check when
       configured (and only when the LLM strongly disagrees). Never raises.
+    - When token overlap score is 0.0 (zero grounding), answer is not answerable
+      since it has no support in the retrieved context.
     """
     if is_refusal(answer):
         return 0.0, False
@@ -119,4 +121,7 @@ def score_faithfulness(
                 score = min(score, 0.4)  # LLM says ungrounded; cap the optimistic overlap score
             elif llm == 1.0 and score < 0.5:
                 score = max(score, 0.6)
+    # Tightened heuristic: zero token overlap means zero grounding -> not answerable
+    if score == 0.0:
+        return 0.0, False
     return float(score), True

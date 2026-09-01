@@ -97,12 +97,13 @@ def test_no_answer_refusal_with_multi_hop():
 
 def test_answerability_score_zero_when_no_support():
     """Test that faithfullness score is 0.0 when answer has no supporting context."""
-    # A claim with zero token overlap with context should score 0.0
+    # A claim with zero token overlap with context should score 0.0 and not be answerable
+    # (tightened heuristic: zero grounding means zero support)
     score, answerable = score_faithfulness(
         "The absolutely verified truth about quantum gravity is X",
         ["some context about biology and chemistry"],
     )
     # Score should reflect zero overlap
     assert score == 0.0, f"Expected 0.0 faithfulness with zero token overlap, got {score}"
-    # Answer should still be marked answerable (heuristic default)
-    assert answerable == True, f"Expected answerable=True default, got {answerable}"
+    # Tightened heuristic: zero token overlap means zero grounding -> not answerable
+    assert answerable is False, f"Expected answerable=False with zero grounding, got {answerable}"

@@ -47,8 +47,9 @@ def test_score_faithfulness_grounded():
 def test_score_faithfulness_ungrounded_answerable_flag():
     ctx = ["The Phoenix project launched in Q1 and moved the billing service to the cloud."]
     score, answerable = score_faithfulness("The Mars colony was established in 2099.", ctx)
-    assert answerable is True  # has an answer, just poorly grounded
-    assert score < 0.3
+    # Tightened heuristic: zero token overlap means zero grounding -> not answerable
+    assert answerable is False
+    assert score == 0.0
 
 
 def test_score_faithfulness_refusal_not_answerable():
