@@ -148,7 +148,7 @@ groups:
       # No-response / timeout rate
       - alert: RAGNoResponseRate
         expr: |
-          sum(rate(rag_no_response_total[10m])) / sum(rate(rag_requests_total[10m])) > 0.15
+          - sum(rate(rag_no_answer_total[10m])) / sum(rate(rag_requests_total[10m])) > 0.15
         for: 10m
         labels:
           severity: page
