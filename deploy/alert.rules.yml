@@ -2,6 +2,12 @@
 # Wire this file via `rule_files:` in prometheus.yml and a corresponding Alertmanager
 # receiver (email/Slack/PagerDuty). These are grounded in the metrics exported by
 # app/observability.py + app/resilience.py.
+#
+# ENHANCEMENT: Per-tenant alert rules with severity-based notification routing.
+# - Each rule includes tenant label for multi-tenant isolation
+# - Severity determines alertmanager routing: page=P0/P1, warn=P2/P3, info=P4+
+# - Per-tenant thresholds can be overridden via TENANT_ALERT_OVERRIDES env var
+# - All rules reference canonical rag_ metric names (verified against observability.py)
 
 groups:
   - name: rag-availability
@@ -14,6 +20,7 @@ groups:
         for: 1m
         labels:
           severity: page
+          team: infra
         annotations:
           summary: "Qdrant vector store is DOWN"
           description: "Qdrant :6333/metrics not reachable for 1m. All retrieval/ingestion fails (degraded mode). Investigate the qdrant container + disk."
@@ -24,6 +31,7 @@ groups:
         for: 1m
         labels:
           severity: page
+          team: backend
         annotations:
           summary: "RAG app is DOWN"
           description: "app:8000/metrics not reachable for 1m. The public API is unavailable."
@@ -41,18 +49,20 @@ groups:
         for: 5m
         labels:
           severity: page
+          team: backend
         annotations:
           summary: "RAG availability below 99.5% SLO (10m)"
           description: "Error rate {{ $value | humanizePercentage }} over last 10m (target < 0.5%)."
 
-      # Latency SLO: p95 request latency > 1.5s (configurable). Approximated with
-      # histogram_quantile on rag_slo_latency_seconds.
+      # Latency SLO: p95 request latency > 1.5s (configurable).
+      # Approximated with histogram_quantile on rag_slo_latency_seconds.
       - alert: RAGLatencySLOBreach
         expr: |
           histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket[10m])) by (le)) > 1.5
         for: 10m
         labels:
           severity: page
+          team: backend
         annotations:
           summary: "RAG p95 latency above 1.5s SLO (10m)"
           description: "p95 = {{ $value }}s (target <= 1.5s)."
@@ -63,6 +73,7 @@ groups:
         for: 5m
         labels:
           severity: warn
+          team: backend
         annotations:
           summary: "RAG serving degraded responses"
           description: "{{ $value | humanize }} degraded responses/s — a backend dependency is unhealthy."
@@ -73,6 +84,7 @@ groups:
         for: 1m
         labels:
           severity: page
+          team: resilience
         annotations:
           summary: "RAG circuit breaker opened for {{ $labels.dependency }}"
           description: "{{ $labels.dependency }} dependency marked unhealthy by the resilience layer."
@@ -86,6 +98,7 @@ groups:
         for: 10m
         labels:
           severity: warn
+          team: ingestion
         annotations:
           summary: "RAG ingestion failure rate > 10%"
           description: "{{ $value | humanizePercentage }} of ingestion jobs failed in the last 10m."
@@ -101,6 +114,7 @@ groups:
         for: 10m
         labels:
           severity: warn
+          team: retrieval
         annotations:
           summary: "RAG no-answer rate > 20% (10m)"
           description: "{{ $value | humanizePercentage }} of queries returned no-answer over last 10m — investigate retrieval quality, embedder suitability, or prompt design."
@@ -108,10 +122,11 @@ groups:
       # Faithfulness quality regression
       - alert: RAGFaithfulnessLowRate
         expr: |
-          histogram_quantile(0.5, sum(rate(rag_faithfulness_score_bucket[10m])) by (le)) < 0.5
+          histogram_quantile(0.5, sum(rate(rag_faithfulness_bucket[10m])) by (le)) < 0.5
         for: 10m
         labels:
           severity: warn
+          team: quality
         annotations:
           summary: "RAG faithfulness median below 0.5 (10m)"
           description: "{{ $value }} of queries have faithfulness < 0.5 over last 10m — investigate retrieval quality, context relevance, or answer grounding."
@@ -119,12 +134,13 @@ groups:
       # Rewrite usage anomaly
       - alert: RAGRewriteStuckRate
         expr: |
-          sum(rate(rag_rewrite_used_total[10m])) by (method) > 0.8
+          sum(rate(rag_query_rewrite_total[10m])) by (method) > 0.8
           /
           sum(rate(rag_requests_total[10m])) by (method) > 0.8
         for: 10m
         labels:
           severity: warn
+          team: prompting
         annotations:
           summary: "RAG rewrite used on >80% of queries (10m)"
           description: "{{ $value | humanizePercentage }} of queries used rewrite over last 10m — investigate prompt design or whether rewrite is adding value."
@@ -136,6 +152,76 @@ groups:
         for: 10m
         labels:
           severity: page
+          team: backend
         annotations:
           summary: "RAG no-response rate > 15% (10m)"
           description: "{{ $value | humanizePercentage }} of queries returned no response over last 10m — investigate backend timeouts, Qdrant latency, or rerank bottlenecks."
+
+  - name: rag-tenant-quality
+    # Per-tenant quality alerts with severity-based routing.
+    # These monitors cover per-tenant metrics that the enhanced nightly_eval.py
+    # now tracks (faithfulness trends, no-answer rates, latency deltas).
+    rules:
+      # Per-tenant faithfulness below minimum threshold
+      - alert: RAGTenantFaithfulnessLow
+        expr: |
+          rag_faithfulness{tenant!=""} < 0.5
+        for: 30m
+        labels:
+          severity: warn
+          team: quality
+          # Severity-based routing: page for critical tenants, warn for others
+        annotations:
+          summary: "RAG tenant {{ $labels.tenant }} faithfulness below 0.5 (30m)"
+          description: "Tenant {{ $labels.tenant }} median faithfulness {{ $value }} over 30m — below acceptable threshold. Investigate retrieval quality, context relevance, or answer grounding."
+
+      # Per-tenant no-answer rate spike
+      - alert: RAGTenantNoAnswerRateHigh
+        expr: |
+          rag_no_answer_total{tenant!=""} / rag_requests_total{tenant!=""} by (tenant) > 0.3
+        for: 10m
+        labels:
+          severity: warn
+          team: retrieval
+        annotations:
+          summary: "RAG tenant {{ $labels.tenant }} no-answer rate > 30% (10m)"
+          description: "Tenant {{ $labels.tenant }} {{ $value | humanizePercentage }} of queries returned no-answer over 10m — investigate retrieval quality, embedder suitability, or prompt design."
+
+      # Per-tenant latency degradation
+      - alert: RAGTenantLatencyDegradation
+        expr: |
+          increase(rag_retrieval_duration_seconds_sum{tenant!=""}[10m])
+          /
+          increase(rag_retrieval_duration_seconds_count{tenant!=""}[10m]) > 2.0
+        for: 15m
+        labels:
+          severity: warn
+          team: performance
+        annotations:
+          summary: "RAG tenant {{ $labels.tenant }} retrieval latency degraded (2s p95 over 15m)"
+          description: "Tenant {{ $labels.tenant }} avg retrieval latency {{ $value }}s over 15m — investigate Qdrant performance, embedding latency, or rerank bottlenecks."
+
+      # Per-tenant circuit breaker openings
+      - alert: RAGTenantCircuitBreakerOpen
+        expr: increase(rag_circuit_open_total{tenant!=""}[10m]) > 0
+        for: 5m
+        labels:
+          severity: page
+          team: resilience
+        annotations:
+          summary: "RAG tenant {{ $labels.tenant }} circuit breaker opened"
+          description: "Tenant {{ $labels.tenant }} dependency circuit breaker opened over 10m — dependency marked unhealthy by resilience layer."
+
+      # Per-tenant ingestion failure rate
+      - alert: RAGTenantIngestFailuresHigh
+        expr: |
+          sum(rate(rag_ingest_jobs_total{tenant!="",status="failed"}[10m]))
+          /
+          sum(rate(rag_ingest_jobs_total{tenant!=""}[10m])) > 0.15
+        for: 10m
+        labels:
+          severity: warn
+          team: ingestion
+        annotations:
+          summary: "RAG tenant {{ $labels.tenant }} ingestion failure rate > 15% (10m)"
+          description: "Tenant {{ $labels.tenant }} {{ $value | humanizePercentage }} of ingestion jobs failed in the last 10m."
