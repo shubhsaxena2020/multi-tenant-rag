@@ -113,3 +113,19 @@ def test_query_no_answer_path(client, monkeypatch):
     body = q.json()
     assert body["answerable"] is False
     assert "don't have" in (body["answer"] or "").lower() or "enough information" in (body["answer"] or "").lower()
+
+# ---------------- adversarial: stopword preservation for negation ----------------
+def test_stopword_preservation_for_negation():
+    """Ensure 'no' and 'not' are preserved in _tokens for faithfulness/negation detection."""
+    from app.faithfulness import _tokens
+
+    # 'no' must NOT be stripped (critical for negation detection in faithfulness)
+    assert 'no' in _tokens("no cats")
+    assert 'cat' in _tokens("no cat")
+
+    # 'not' must NOT be stripped (critical for negation detection)
+    assert 'not' in _tokens("not relevant")
+
+    # Normal stopwords should still be stripped
+    assert 'the' not in _tokens("the cat")
+    assert 'a' not in _tokens("a cat")

@@ -20,7 +20,7 @@ _STOPWORDS = {
     "was", "were", "be", "been", "being", "it", "this", "that", "these", "those", "as", "at",
     "by", "from", "we", "you", "they", "he", "she", "i", "our", "your", "their", "its", "can",
     "could", "should", "would", "will", "may", "might", "do", "does", "did", "has", "have",
-    "had", "not", "no", "yes", "if", "then", "than", "so", "there", "here", "about", "into",
+    "had", "yes", "if", "then", "than", "so", "there", "here", "about", "into",
     "over", "under", "between", "both", "each", "more", "most", "other", "some", "such", "only",
 }
 
