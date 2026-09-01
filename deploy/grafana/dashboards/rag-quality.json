@@ -2,7 +2,7 @@
   "dashboard": {
     "id": null,
     "uid": "rag-quality",
-    "title": "RAG Service \u2014 Retrieval Quality",
+    "title": "RAG Service — Retrieval Quality",
     "tags": [
       "rag",
       "quality",
@@ -68,6 +68,11 @@
           {
             "expr": "histogram_quantile(0.5, sum(rate(rag_query_hits_bucket{tenant=\"\"}[10m])) by (le))",
             "legendFormat": "hits_median_by_tenant"
+          },
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(rag_no_answer_total[10m])) by (le))",
+            "legendFormat": "no_answer_rate",
+            "type": 0
           }
         ],
         "fieldConfig": {
@@ -128,7 +133,7 @@
             "type": 0
           },
           {
-            "expr": "sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{tenant=\"\"}[1h])) + sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"false\"}[1h])))",
+            "expr": "sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"true\"}[1h])) + sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"false\"}[1h])))",
             "legendFormat": "rewrite_rate_by_tenant"
           }
         ],
@@ -193,7 +198,16 @@
             "expr": "sum(rate(rag_query_hits_count{tenant=\"\"}[10m]))",
             "legendFormat": "queries/s_by_tenant"
           }
-        ]
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
         "id": 7,
@@ -264,7 +278,7 @@
       },
       {
         "id": 9,
-        "title": "Severity Heatmap \u2014 Alert Correlation (1h)",
+        "title": "Severity Heatmap — Alert Correlation (1h)",
         "type": "heatmap",
         "gridPos": {
           "h": 6,
