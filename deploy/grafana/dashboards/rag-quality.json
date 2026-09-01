@@ -2,53 +2,241 @@
   "dashboard": {
     "id": null,
     "uid": "rag-quality",
-    "title": "RAG Service — Retrieval Quality",
-    "tags": ["rag", "quality", "retrieval"],
+    "title": "RAG Service \u2014 Retrieval Quality",
+    "tags": [
+      "rag",
+      "quality",
+      "retrieval"
+    ],
     "timezone": "browser",
     "schemaVersion": 39,
     "refresh": "1m",
-    "time": { "from": "now-24h", "to": "now" },
+    "time": {
+      "from": "now-24h",
+      "to": "now"
+    },
     "panels": [
       {
-        "id": 1, "title": "Faithfulness (avg, 1h)", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 0, "y": 0 },
+        "id": 1,
+        "title": "Faithfulness (avg, 1h)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        },
         "targets": [
-          { "expr": "avg(rate(rag_faithfulness_sum[1h])) / avg(rate(rag_faithfulness_count[1h]))", "legendFormat": "faithfulness_avg", "type": 0 }
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(rag_faithfulness_bucket[1h])) by (le))",
+            "legendFormat": "faithfulness_median",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "min": 0,
+            "max": 1,
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 2, "title": "No-answer rate", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+        "id": 2,
+        "title": "No-answer rate",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        },
         "targets": [
-          { "expr": "sum(rate(rag_no_answer_total[1h])) / sum(rate(rag_query_hits_count[1h]))", "legendFormat": "no_answer_rate", "type": 0 }
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(rag_query_hits_bucket[10m])) by (le))",
+            "legendFormat": "hits_median",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 3, "title": "Chunks returned / query (avg)", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 0, "y": 6 },
+        "id": 3,
+        "title": "Chunks returned / query (avg)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 6
+        },
         "targets": [
-          { "expr": "avg(rate(rag_query_hits_sum[10m])) / avg(rate(rag_query_hits_count[10m]))", "legendFormat": "hits_avg", "type": 0 }
+          {
+            "expr": "avg(rate(rag_query_hits_sum[10m])) / avg(rate(rag_query_hits_count[10m]))",
+            "legendFormat": "hits_avg",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 4, "title": "Rewrite usage rate", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 },
+        "id": 4,
+        "title": "Rewrite usage rate",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 6
+        },
         "targets": [
-          { "expr": "sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) + sum(rate(rag_query_rewrite_total{used=\"false\"}[1h])))", "legendFormat": "rewrite_rate", "type": 0 }
+          {
+            "expr": "sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) + sum(rate(rag_query_rewrite_total{used=\"false\"}[1h])))",
+            "legendFormat": "rewrite_rate",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 5, "title": "Retrieval latency p95", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+        "id": 5,
+        "title": "Retrieval latency p95",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 12
+        },
         "targets": [
-          { "expr": "histogram_quantile(0.95, sum(rate(rag_retrieval_duration_seconds_bucket[10m])) by (le))", "legendFormat": "p95", "type": 0 }
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rag_retrieval_duration_seconds_bucket[10m])) by (le))",
+            "legendFormat": "p95",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 6, "title": "Quality events ingested (rate)", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+        "id": 6,
+        "title": "Quality events ingested (rate)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 12
+        },
         "targets": [
-          { "expr": "sum(rate(rag_query_hits_count[10m]))", "legendFormat": "queries/s", "type": 0 }
+          {
+            "expr": "sum(rate(rag_query_hits_count[10m]))",
+            "legendFormat": "queries/s",
+            "type": 0
+          }
         ]
+      },
+      {
+        "id": 7,
+        "title": "SLO Availability (10m window)",
+        "type": "gauge",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 18
+        },
+        "targets": [
+          {
+            "expr": "1 - (sum(rate(rag_slo_requests_total{outcome=\"error\"}[10m])) / sum(rate(rag_slo_requests_total[10m])))",
+            "legendFormat": "availability"
+          },
+          {
+            "expr": "1 - (sum(rate(rag_slo_requests_total{outcome=\"error\"}[10m])) / sum(rate(rag_slo_requests_total[10m]))) * 100",
+            "legendFormat": "availability_percent"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "min": 0,
+            "max": 1,
+            "thresholds": {
+              "mode": "value",
+              "value": 0.95,
+              "color": "green",
+              "range": {
+                "from": 0,
+                "to": 0.95
+              }
+            }
+          }
+        }
+      },
+      {
+        "id": 8,
+        "title": "SLO Latency p95 (10m window)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 18
+        },
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket[10m])) by (le))",
+            "legendFormat": "p95_latency"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket{tenant=\"\"}[10m])) by (le))",
+            "legendFormat": "p95_latency_by_tenant"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       }
     ]
   },
