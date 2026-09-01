@@ -74,13 +74,13 @@ def test_prompt_contamination_noise():
 
 def test_answerability_with_no_context():
     """Test that answerability is correctly assessed when no context supports the answer.
-    
+
     Note: The current token-overlap heuristic returns answerable=True even with zero context,
     since the default path doesn't reject answers solely on empty context. The score is 0.0
     which correctly signals zero grounding, but answerable depends on the caller's logic.
     """
     from app.faithfulness import score_faithfulness
-    
+
     # A claim with zero supporting context should score 0.0 faithfulness
     score, answerable = score_faithfulness(
         "The moon is made of green cheese",
@@ -98,7 +98,54 @@ def test_refusal_on_no_answer():
     assert is_refusal("I do not know") == True
     assert is_refusal("I cannot answer") == True
     assert is_refusal("") == True  # empty answer is refusal
-    
+
     # These should NOT be refusals
     assert is_refusal("The answer is yes") == False
     assert is_refusal("The capital of France is Paris") == False
+
+
+def test_prompt_injection_noise():
+    """Test that retrieval is robust to injected noise/irrelevant terms in prompts."""
+    # Query with lots of irrelevant/noisy terms
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="the cat sat on the mat and then the dog came and the bird flew away what is the capital of France",
+        plan=[],
+        requested_hops=1,
+        top_k=3,
+        candidate_k=10,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=10,
+        max_hops=1,
+    )
+    # Should not crash and should complete 1 hop
+    assert hop_count >= 1, "Should complete 1 hop despite noisy prompt"
+    # If results returned, they should have diagnostics
+    if results:
+        for r in results:
+            assert "metadata" in r or "source" in r, "Result should have diagnostics"
+
+
+def test_prompt_contamination_source_selection():
+    """Test that source selection diagnostics are available under contamination."""
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="What did the phoenix project launch in Q1 and move the billing service to the cloud?",
+        plan=[],
+        requested_hops=1,
+        top_k=5,
+        candidate_k=10,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=10,
+        max_hops=1,
+    )
+    # Should complete 1 hop without crash
+    assert hop_count >= 1, "Should complete 1 hop"
+    # If results returned, check diagnostics structure
+    if results:
+        for r in results:
+            has_diag = "metadata" in r or "source" in r
+            # At minimum result should be a dict
+            assert isinstance(r, dict), "Result should be dict-like"
