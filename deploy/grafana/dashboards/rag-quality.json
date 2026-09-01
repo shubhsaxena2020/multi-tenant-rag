@@ -18,7 +18,7 @@
     "panels": [
       {
         "id": 1,
-        "title": "Faithfulness (avg, 1h)",
+        "title": "Faithfulness (avg, 1h) + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -31,6 +31,10 @@
             "expr": "histogram_quantile(0.5, sum(rate(rag_faithfulness_bucket[1h])) by (le))",
             "legendFormat": "faithfulness_median",
             "type": 0
+          },
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(rag_faithfulness_bucket{tenant=\"\"}[1h])) by (le))",
+            "legendFormat": "faithfulness_median_by_tenant"
           }
         ],
         "fieldConfig": {
@@ -47,7 +51,7 @@
       },
       {
         "id": 2,
-        "title": "No-answer rate",
+        "title": "No-answer rate + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -60,6 +64,10 @@
             "expr": "histogram_quantile(0.5, sum(rate(rag_query_hits_bucket[10m])) by (le))",
             "legendFormat": "hits_median",
             "type": 0
+          },
+          {
+            "expr": "histogram_quantile(0.5, sum(rate(rag_query_hits_bucket{tenant=\"\"}[10m])) by (le))",
+            "legendFormat": "hits_median_by_tenant"
           }
         ],
         "fieldConfig": {
@@ -74,7 +82,7 @@
       },
       {
         "id": 3,
-        "title": "Chunks returned / query (avg)",
+        "title": "Chunks returned / query + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -87,6 +95,10 @@
             "expr": "avg(rate(rag_query_hits_sum[10m])) / avg(rate(rag_query_hits_count[10m]))",
             "legendFormat": "hits_avg",
             "type": 0
+          },
+          {
+            "expr": "avg(rate(rag_query_hits_sum{tenant=\"\"}[10m])) / avg(rate(rag_query_hits_count{tenant=\"\"}[10m]))",
+            "legendFormat": "hits_avg_by_tenant"
           }
         ],
         "fieldConfig": {
@@ -101,7 +113,7 @@
       },
       {
         "id": 4,
-        "title": "Rewrite usage rate",
+        "title": "Rewrite usage rate + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -114,6 +126,10 @@
             "expr": "sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{used=\"true\"}[1h])) + sum(rate(rag_query_rewrite_total{used=\"false\"}[1h])))",
             "legendFormat": "rewrite_rate",
             "type": 0
+          },
+          {
+            "expr": "sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"true\"}[1h])) / (sum(rate(rag_query_rewrite_total{tenant=\"\"}[1h])) + sum(rate(rag_query_rewrite_total{tenant=\"\",used=\"false\"}[1h])))",
+            "legendFormat": "rewrite_rate_by_tenant"
           }
         ],
         "fieldConfig": {
@@ -128,7 +144,7 @@
       },
       {
         "id": 5,
-        "title": "Retrieval latency p95",
+        "title": "Retrieval latency p95 + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -141,6 +157,10 @@
             "expr": "histogram_quantile(0.95, sum(rate(rag_retrieval_duration_seconds_bucket[10m])) by (le))",
             "legendFormat": "p95",
             "type": 0
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rag_retrieval_duration_seconds_bucket{tenant=\"\"}[10m])) by (le))",
+            "legendFormat": "p95_by_tenant"
           }
         ],
         "fieldConfig": {
@@ -155,7 +175,7 @@
       },
       {
         "id": 6,
-        "title": "Quality events ingested (rate)",
+        "title": "Quality events ingested + per-tenant",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -168,6 +188,10 @@
             "expr": "sum(rate(rag_query_hits_count[10m]))",
             "legendFormat": "queries/s",
             "type": 0
+          },
+          {
+            "expr": "sum(rate(rag_query_hits_count{tenant=\"\"}[10m]))",
+            "legendFormat": "queries/s_by_tenant"
           }
         ]
       },
@@ -234,6 +258,33 @@
             "custom": {
               "drawStyle": "line",
               "lineWidth": 2
+            }
+          }
+        }
+      },
+      {
+        "id": 9,
+        "title": "Severity Heatmap \u2014 Alert Correlation (1h)",
+        "type": "heatmap",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 24
+        },
+        "targets": [
+          {
+            "expr": "sum by (severity, tenant) (count by (severity, tenant) (rag_alerts_total[1h]))",
+            "legendFormat": "{{severity}}/{{tenant}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "heatmap",
+              "heatmapColorMode": "value",
+              "heatmapColor": "Viridis"
             }
           }
         }
