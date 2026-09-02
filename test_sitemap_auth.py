@@ -107,6 +107,7 @@ def test_sitemap_crawl_ingests_pages_valid_auth(client, patched_fetch):
     assert final["urls_ingested"] == 2, final
 
     cat = client.get(f"{V}/acme/documents", headers=auth).json()
+    # cat is a dict from .json(), not a Pydantic model
     assert cat["total"] == 2, cat
     titles = {d["title"] for d in cat["items"]}
     assert {"https://example.com/a", "https://example.com/b"} <= titles
