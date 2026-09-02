@@ -14,14 +14,12 @@ is bounded by what users explicitly submitted via feedback/lead forms. This is i
 documented; full query-text mining would require a separate (privacy-reviewed) logging decision.
 """
 from __future__ import annotations
-
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
 from .db import get_session_maker
-
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -32,10 +30,10 @@ async def get_out_of_scope_rate(tenant_id: str, *, days: int = 30) -> dict:
     start = _now() - timedelta(days=days)
     session_maker = get_session_maker()
     async with session_maker() as session:
-        rows = (await session.execute(text("""
-            SELECT meta FROM usage_events
-            WHERE tenant_id = :tenant_id AND kind = 'query' AND ts >= :start
-        """), {"tenant_id": tenant_id, "start": start})).fetchall()
+        rows = (await session.execute(text(
+            """SELECT meta FROM usage_events
+            WHERE tenant_id = :tenant_id AND kind = 'query' AND ts >= :start"""
+        ), {"tenant_id": tenant_id, "start": start})).fetchall()
     total = 0
     oos = 0
     for (meta_json,) in rows:
@@ -64,17 +62,17 @@ async def get_top_questions(tenant_id: str, *, limit: int = 10, days: int = 30) 
     session_maker = get_session_maker()
     counts: Counter = Counter()
     async with session_maker() as session:
-        fb = (await session.execute(text("""
-            SELECT question FROM feedback
-            WHERE tenant_id = :tenant_id AND question IS NOT NULL AND ts >= :start
-        """), {"tenant_id": tenant_id, "start": start})).fetchall()
+        fb = (await session.execute(text(
+            """SELECT question FROM feedback
+            WHERE tenant_id = :tenant_id AND question IS NOT NULL AND ts >= :start"""
+        ), {"tenant_id": tenant_id, "start": start})).fetchall()
         for (q,) in fb:
             if q and q.strip():
                 counts[q.strip()] += 1
-        ld = (await session.execute(text("""
-            SELECT question FROM leads
-            WHERE tenant_id = :tenant_id AND question IS NOT NULL AND ts >= :start
-        """), {"tenant_id": tenant_id, "start": start})).fetchall()
+        ld = (await session.execute(text(
+            """SELECT question FROM leads
+            WHERE tenant_id = :tenant_id AND question IS NOT NULL AND ts >= :start"""
+        ), {"tenant_id": tenant_id, "start": start})).fetchall()
         for (q,) in ld:
             if q and q.strip():
                 counts[q.strip()] += 1
@@ -158,6 +156,7 @@ async def get_fleet_summary(*, days: int = 30) -> dict:
     from .leads import get_lead_summary
     from .knowledge_gaps import count_knowledge_gaps
     from .token_usage import get_fleet_token_usage
+    from .observability import RELEASE_INCIDENTS
 
     tenants = await list_tenants()
     per_tenant = []
@@ -165,6 +164,7 @@ async def get_fleet_summary(*, days: int = 30) -> dict:
         "queries": 0, "docs_ingested": 0, "chunks_ingested": 0, "eval_runs": 0,
         "feedback_up": 0, "feedback_down": 0, "leads": 0, "knowledge_gaps": 0,
     }
+    orphaned_jobs = 0
     for t in tenants:
         tid = t["tenant_id"]
         # Each source is fault-isolated: a failure in one must not blank the others.
@@ -204,12 +204,20 @@ async def get_fleet_summary(*, days: int = 30) -> dict:
         totals["feedback_down"] += fb.get("down", 0)
         totals["leads"] += ld.get("total", 0)
         totals["knowledge_gaps"] += gaps
-
+        # Accumulate orphaned jobs from release incidents
+        try:
+            orphaned_jobs += int(RELEASE_INCIDENTS.labels(outcome="orphaned").value)
+        except Exception:
+            orphaned_jobs += 0
     tokens = await get_fleet_token_usage(days=days)
+    incident_markers = {
+        "orphaned_jobs": orphaned_jobs,
+    }
     return {
         "tenant_count": len(tenants),
         "window_days": days,
         "totals": totals,
         "tokens": tokens,
         "tenants": per_tenant,
+        "incident_markers": incident_markers,
     }
