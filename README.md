@@ -119,7 +119,32 @@ Admin routes (`POST/GET/DELETE /tenants`) require `Admin-Key: <admin_api_key>` w
 - Max 1,000,000 chars per document; content_type ∈ {text, markdown, html, code};
   metadata JSON ≤ 32 KB. Violations → 422.
 
-## Tests
+122|## Quick Start: Operator Onboarding (Admin Console)
+123|
+124|Follow these steps to create your first tenant, upload a document, and run your first query entirely from the browser admin console (no curl required):
+125|
+126|1. **Start the server:**
+127|   - Use the instructions above to launch the app and database. Ensure the service is running and accessible in your browser.
+128|2. **Open Admin Console:**
+129|   - Visit `http://<your-server>:8000/static/admin.html` in your browser.
+130|3. **Admin-Key Setup:**
+131|   - Find/set your `ADMIN_API_KEY` in your server environment. Enter this key in the Admin-Key field at the top of the console and click 'Load console'.
+132|4. **Create a Tenant:**
+133|   - Click `+ New tenant`, enter a name, and submit.
+134|   - The tenant will appear in the list. Copy the generated tenant ID and API Key for later queries.
+135|5. **Upload Your First Document:**
+136|   - Select the tenant, find the 'documents' section, and use the upload control or API sample to add content to your tenant.
+137|6. **Run a Query:**
+138|   - Use the widget or the query form under your tenant to run your first search/QA. Ensure you use the correct API Key for the tenant.
+139|7. **Troubleshooting Tips:**
+140|   - 401/403: Double-check the Admin-Key or Tenant API Key. Ensure browser and server time match.
+141|   - Missing tenant: Confirm you loaded the console with the Admin-Key before creating/querying tenants.
+142|   - Ingestion blocked: Verify document meets max length/format; check server logs for errors.
+143|   - Still stuck? See `/api/v1/docs` for live API schema or consult the 'Fleet Plan' docs in `.hermes/fleet-plan/plan`.
+144|
+145|For guides on key rotation, document deletion, usage analytics, and advanced admin operations, see the main sections below.
+146|
+147|---
 `pytest tests/` (needs Qdrant on `:6333`). Covers: hybrid retrieval wiring, hard tenant
 isolation (a tenant's secret never appears in another tenant's query), encryption-at-
 rest (raw Qdrant payload is ciphertext), document-level RBAC, async job lifecycle +

@@ -138,7 +138,7 @@ This section ensures operators can quickly verify the measurement surface withou
 
 ### 8. Auth Alignment (verified from code inspection)
 
-The `require_admin` guard accepts either `Admin-Key` header **or** `Authorization: Bearer ***` header, both comparing against `settings.admin_api_key` (`t3XPe81lU2Zpp0gy8dwq1Zlyh3Wk/r25`).
+The `require_admin` guard accepts either `Admin-Key` header **or** `Authorization: Bearer ***` header, both comparing against `settings.admin_api_key` (`<redacted-present>`).
 
 - `Admin-Key` header → for human operators
 - `Authorization: Bearer ***` → for Prometheus scraping and scripted access
