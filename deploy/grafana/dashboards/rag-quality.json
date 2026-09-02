@@ -334,6 +334,33 @@
             }
           }
         }
+      },
+      {
+        "id": 11,
+        "title": "Release Incidents — Per-tenant breakdown",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 30
+        },
+        "targets": [
+          {
+            "expr": "sum by (tenant) (rate(rag_release_incidents_total[1h]))",
+            "legendFormat": "{{tenant}}",
+            "type": 0
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       }
     ]
   },
