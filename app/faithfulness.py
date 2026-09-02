@@ -10,6 +10,7 @@ self-check can be layered on top when `LLM_BASE_URL` is configured (mockable in 
 unavailable or errors, we fall back to the deterministic score so the path never breaks.
 """
 
+
 from __future__ import annotations
 import re
 from typing import Iterable
@@ -23,12 +24,14 @@ _STOPWORDS = {
     "over", "under", "between", "both", "each", "more", "most", "other", "some", "such", "only",
 }
 
+
 def _normalize_token(t: str) -> str:
     """Strip possessive 's and standardize common contractions for token overlap."""
     # Strip trailing possessive 's (e.g., "dog's" -> "dog")
     if t.endswith("'s"):
         t = t[:-2]
     return t
+
 
 def _tokens(text: str) -> list[str]:
     raw_tokens = [t for t in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower()) if t not in _STOPWORDS and len(t) > 1]
@@ -41,11 +44,38 @@ def is_refusal(answer: str | None) -> bool:
         return True
     low = answer.lower()
     markers = (
-        "i don't know", "i do not know", "i cannot", "i can't",
-        "no information", "don't have information", "do not have information",
-        "i'm sorry", "i am sorry", "unable to", "can't help", "cannot help",
+        "i dont know", "i do not know", "i cannot", "i cant",
+        "no information", "dont have information", "do not have information",
+        "imsorry", "isorry", "unable to", "cant help", "cannot help",
     )
     return any(m in low for m in markers)
+
+
+def _detect_negation_contradiction(answer: str, context: str) -> bool:
+    """Check if the answer contains negation that contradicts the context.
+
+    Detects patterns like "X is NOT in Y" when context says "X is in Y",
+    or any answer token with 'not'/'n't' that negates a claim present in context.
+    """
+    ans_lower = answer.lower()
+    ctx_lower = context.lower()
+
+    # Find negated phrases in answer (e.g., "not X", "isn't X", "don't X")
+    negated_terms = re.findall(r"([a-z0-9]+\s+not|n't)", ans_lower)
+
+    for term in negated_terms:
+        term_clean = term.replace("n't", "").strip()
+        # If the negated term appears in context, it's a contradiction
+        if term_clean and term_clean in ctx_lower:
+            return True
+
+    # Check for "is not", "are not", "was not", "were not" patterns
+    contradiction_patterns = ["is not", "are not", "was not", "were not", "aint"]
+    for pattern in contradiction_patterns:
+        if pattern in ans_lower and pattern.replace("not", "").strip() in ctx_lower:
+            return True
+
+    return False
 
 
 def token_overlap(answer: str, context: str) -> float:
@@ -78,7 +108,7 @@ def _llm_self_check(answer: str, context: str) -> float | None:
                 "model": s.llm_model,
                 "messages": [{"role": "user", "content": (
                     "Answer strictly grounded? Reply with only 'yes' or 'no'.\n"
-                    f"CONTEXT:\n{context[:2000]}\n\nANSWER:\n{answer[:1000]}"
+                    f"CONTEXT:{context[:2000]}\n\nANSWER:{answer[:1000]}"
                 )}],
                 "temperature": 0.0,
             },
@@ -147,4 +177,8 @@ def score_faithfulness(
         total_answer_tokens = len(_tokens(answer or ""))
         if total_answer_tokens > 0 and absent_count / total_answer_tokens > 0.5:
             return 0.0, False
+    # NEW: detect negation contradictions — if answer negates a claim in context,
+    # the faithfulness score should be zero since the answer is not grounded.
+    if _detect_negation_contradiction(answer or "", context):
+        return 0.0, False
     return float(score), True
