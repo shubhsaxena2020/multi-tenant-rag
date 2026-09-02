@@ -2,64 +2,229 @@
   "dashboard": {
     "id": null,
     "uid": "rag-svc",
-    "title": "RAG Service — SLOs & Isolation",
-    "tags": ["rag", "multitenant", "slo"],
+    "title": "RAG Service \u2014 SLOs & Isolation",
+    "tags": [
+      "rag",
+      "multitenant",
+      "slo"
+    ],
     "timezone": "browser",
     "schemaVersion": 39,
     "refresh": "30s",
-    "time": { "from": "now-6h", "to": "now" },
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
     "panels": [
       {
-        "id": 1, "title": "Target health (up)", "type": "stat", "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+        "id": 1,
+        "title": "Target health (up)",
+        "type": "stat",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 0
+        },
         "targets": [
-          { "expr": "up{service=\"qdrant\"}", "legendFormat": "qdrant" },
-          { "expr": "up{service=\"rag-app\"}", "legendFormat": "rag-app" }
+          {
+            "expr": "up{service=\"qdrant\"}",
+            "legendFormat": "qdrant"
+          },
+          {
+            "expr": "up{service=\"rag-app\"}",
+            "legendFormat": "rag-app"
+          }
         ],
         "fieldConfig": {
           "defaults": {
             "mappings": [
-              { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }
+              {
+                "type": "value",
+                "options": {
+                  "0": {
+                    "text": "DOWN",
+                    "color": "red"
+                  },
+                  "1": {
+                    "text": "UP",
+                    "color": "green"
+                  }
+                }
+              }
             ],
-            "thresholds": { "steps": [ { "color": "red", "value": 0 }, { "color": "green", "value": 1 } ] }
+            "thresholds": {
+              "steps": [
+                {
+                  "color": "red",
+                  "value": 0
+                },
+                {
+                  "color": "green",
+                  "value": 1
+                }
+              ]
+            }
           }
         }
       },
       {
-        "id": 2, "title": "Availability (SLO 99.5%)", "type": "timeseries", "gridPos": { "h": 6, "w": 16, "x": 8, "y": 0 },
+        "id": 2,
+        "title": "Availability (SLO 99.5%)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 16,
+          "x": 8,
+          "y": 0
+        },
         "targets": [
-          { "expr": "sum(rate(rag_slo_requests_total{outcome=\"error\"}[10m])) / sum(rate(rag_slo_requests_total[10m]))", "legendFormat": "error_rate", "type": 0 }
+          {
+            "expr": "sum(rate(rag_slo_requests_total{outcome=\"error\"}[10m])) / sum(rate(rag_slo_requests_total[10m]))",
+            "legendFormat": "error_rate",
+            "type": 0
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "percentunit", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 3, "title": "Request latency p95 (SLO 1.5s)", "type": "timeseries", "gridPos": { "h": 6, "w": 16, "x": 0, "y": 6 },
+        "id": 3,
+        "title": "Request latency p95 (SLO 1.5s)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 16,
+          "x": 0,
+          "y": 6
+        },
         "targets": [
-          { "expr": "histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket[10m])) by (le))", "legendFormat": "p95" }
+          {
+            "expr": "histogram_quantile(0.95, sum(rate(rag_slo_latency_seconds_bucket[10m])) by (le))",
+            "legendFormat": "p95"
+          }
         ],
-        "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2 } } }
+        "fieldConfig": {
+          "defaults": {
+            "unit": "s",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       },
       {
-        "id": 4, "title": "Degraded responses / s", "type": "timeseries", "gridPos": { "h": 6, "w": 8, "x": 16, "y": 6 },
+        "id": 4,
+        "title": "Degraded responses / s",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 16,
+          "y": 6
+        },
         "targets": [
-          { "expr": "sum(rate(rag_degraded_responses_total[10m]))", "legendFormat": "degraded/s" }
+          {
+            "expr": "sum(rate(rag_degraded_responses_total[10m]))",
+            "legendFormat": "degraded/s"
+          }
         ]
       },
       {
-        "id": 5, "title": "Circuit-breaker opens (by dependency)", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 0, "y": 12 },
+        "id": 5,
+        "title": "Circuit-breaker opens (by dependency)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 12
+        },
         "targets": [
-          { "expr": "increase(rag_circuit_open_total[1h])", "legendFormat": "{{dependency}}" }
+          {
+            "expr": "increase(rag_circuit_open_total[1h])",
+            "legendFormat": "{{dependency}}"
+          }
         ]
       },
       {
-        "id": 6, "title": "Ingestion jobs (by outcome)", "type": "timeseries", "gridPos": { "h": 6, "w": 12, "x": 12, "y": 12 },
+        "id": 6,
+        "title": "Ingestion jobs (by outcome)",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 12,
+          "y": 12
+        },
         "targets": [
-          { "expr": "sum(rate(rag_ingest_jobs_total[10m])) by (status)", "legendFormat": "{{status}}" }
+          {
+            "expr": "sum(rate(rag_ingest_jobs_total[10m])) by (status)",
+            "legendFormat": "{{status}}"
+          }
         ]
       },
       {
-        "id": 7, "title": "Alerts firing", "type": "alertlist", "gridPos": { "h": 6, "w": 24, "x": 0, "y": 18 },
-        "options": { "show": { "alerts": true }, "alertName": "", "stateFilter": ["alerting", "pending"] },
+        "id": 7,
+        "title": "Alerts firing",
+        "type": "alertlist",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 18
+        },
+        "options": {
+          "show": {
+            "alerts": true
+          },
+          "alertName": "",
+          "stateFilter": [
+            "alerting",
+            "pending"
+          ]
+        },
         "targets": []
+      },
+      {
+        "id": 7,
+        "title": "Release Incidents \u2014 Total + orphaned jobs",
+        "type": "timeseries",
+        "gridPos": {
+          "h": 6,
+          "w": 12,
+          "x": 0,
+          "y": 18
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(rag_release_incidents_total[1h]))",
+            "legendFormat": "release_incidents_rate",
+            "type": 0
+          },
+          {
+            "expr": "sum(rate(rag_release_incidents_total{outcome=\"orphaned\"}[1h]))",
+            "legendFormat": "orphaned_jobs_rate",
+            "type": 0
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       }
     ]
   },
