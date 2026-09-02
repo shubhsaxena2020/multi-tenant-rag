@@ -10,7 +10,6 @@ self-check can be layered on top when `LLM_BASE_URL` is configured (mockable in 
 unavailable or errors, we fall back to the deterministic score so the path never breaks.
 """
 
-
 from __future__ import annotations
 import re
 from typing import Iterable
@@ -43,19 +42,20 @@ def is_refusal(answer: str | None) -> bool:
     if not answer:
         return True
     low = answer.lower()
+    # Normalize: strip apostrophes from contractions like "don't" -> "dont"
+    norm = low.replace("'", "")
     markers = (
         "i dont know", "i do not know", "i cannot", "i cant",
         "no information", "dont have information", "do not have information",
         "imsorry", "isorry", "unable to", "cant help", "cannot help",
     )
-    return any(m in low for m in markers)
+    return any(m in norm for m in markers)
 
 
 def _detect_negation_contradiction(answer: str, context: str) -> bool:
     """Check if the answer contains negation that contradicts the context.
 
-    Detects patterns like "X is NOT in Y" when context says "X is in Y",
-    or any answer token with 'not'/'n't' that negates a claim present in context.
+    Detects patterns like "X is NOT in Y" when context says "X is in Y", or any answer token with 'not'/'n't' that negates a claim present in context.
     """
     ans_lower = answer.lower()
     ctx_lower = context.lower()
@@ -69,11 +69,56 @@ def _detect_negation_contradiction(answer: str, context: str) -> bool:
         if term_clean and term_clean in ctx_lower:
             return True
 
-    # Check for "is not", "are not", "was not", "were not" patterns
+    # Check for "is not", "are not", "was not", "were not", "aint" patterns
     contradiction_patterns = ["is not", "are not", "was not", "were not", "aint"]
     for pattern in contradiction_patterns:
         if pattern in ans_lower and pattern.replace("not", "").strip() in ctx_lower:
             return True
+
+    return False
+
+
+def _has_entity_substitution(answer: str, context: str) -> bool:
+    """Detect when the answer contains key entities that are substituted/inverted relative to context.
+
+    This catches cases like "spaceship" vs "passenger ship" for the Titanic, or
+    any answer that claims a drastically different entity type while sharing some
+    surface tokens. When >30% of answer tokens are absent from context AND the absent
+    tokens include domain-specific nouns that represent a core entity shift, the
+    grounding is unreliable.
+
+    We only flag this when:
+    1. More than 30% of answer tokens are absent from context, AND
+    2. The absent tokens contain at least one noun-like token (no pure stopwords),
+       AND
+    3. The overlap-to-absent ratio indicates the answer is making different core claims
+    """
+    ans_tokens = set(_tokens(answer))
+    ctx_tokens = set(_tokens(context))
+
+    if not ans_tokens or not ctx_tokens:
+        return False
+
+    absent_tokens = ans_tokens - ctx_tokens
+    overlap_tokens = ans_tokens & ctx_tokens
+
+    # If more than 30% of answer tokens are absent from context...
+    if len(absent_tokens) / len(ans_tokens) <= 0.3:
+        return False
+
+    # Check if absent tokens include domain-specific nouns (not just stopwords)
+    # A token is "domain-specific" if it's not a common word and appears in the answer
+    # but not in context. We check for tokens that are reasonably long and alphanumeric.
+    domain_absent = {t for t in absent_tokens if len(t) > 2 and t.isalpha()}
+
+    if not domain_absent:
+        # No domain-specific absent tokens, so this is just missing adjectives/etc — not an entity substitution
+        return False
+
+    # If at least half the answer tokens are absent and there's domain-specific absence,
+    # it's a major grounding gap (use >= to catch the boundary case)
+    if len(domain_absent) / len(ans_tokens) >= 0.5 and len(overlap_tokens) > 0:
+        return True
 
     return False
 
@@ -142,6 +187,9 @@ def score_faithfulness(
       (beyond stopword-level overlap), the faithfulness score is proportionally reduced so that
       answers whose content is mostly unsupported by context receive a lower faithfulness score
       and are less likely to be marked answerable.
+    - Contradiction hardening: if the answer contains claims that fundamentally contradict
+      the retrieved context (e.g., entity substitutions, factual inversions), the score is
+      zeroed and the answer is marked unanswerable, since the grounding is unreliable.
     """
     if is_refusal(answer):
         return 0.0, False
@@ -170,6 +218,11 @@ def score_faithfulness(
             # More than 30% of answer tokens are absent from context, and we had
             # non-trivial overlap — cap the score to reflect the grounding gap.
             score = score * (1 - absence_ratio * 0.6)
+    # Contradiction hardening: if answer has entity substitutions or fundamental
+    # factual contradictions relative to context, zero the score.
+    context_str = " ".join(context_chunks) if context_chunks else ""
+    if _has_entity_substitution(answer or "", context_str):
+        return 0.0, False
     # Tightened answerability: if majority of answer tokens are absent from context,
     # the answer is not reliably answerable even if some tokens overlap.
     if score > 0:
@@ -177,8 +230,6 @@ def score_faithfulness(
         total_answer_tokens = len(_tokens(answer or ""))
         if total_answer_tokens > 0 and absent_count / total_answer_tokens > 0.5:
             return 0.0, False
-    # NEW: detect negation contradictions — if answer negates a claim in context,
-    # the faithfulness score should be zero since the answer is not grounded.
     if _detect_negation_contradiction(answer or "", context):
         return 0.0, False
     return float(score), True

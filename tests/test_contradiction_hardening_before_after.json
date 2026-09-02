@@ -1,0 +1,18 @@
+{
+  "entity_hallucination": {
+    "score": 0.0,
+    "answerable": false
+  },
+  "normal_case": {
+    "score": 0.0,
+    "answerable": false
+  },
+  "no_context": {
+    "score": 0.0,
+    "answerable": false
+  },
+  "negation_contradiction": {
+    "score": 0.0,
+    "answerable": false
+  }
+}
