@@ -1,8 +1,6 @@
 """Service configuration via environment variables / .env."""
 from __future__ import annotations
-
 from functools import lru_cache
-
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,13 +27,9 @@ class Settings(BaseSettings):
     embed_provider: str = "fastembed"
     # Sparse (lexical) model for hybrid retrieval — paired with the dense model above.
     embed_sparse_model: str = "prithivida/Splade_PP_en_v1"
-    # Prefix style for the dense model. multilingual-e5-large REQUIRES `query:`/`passage:`
-    # prefixes (v8 #4 retrieval-quality bug). Set to "none" for models that must not be
-    # prefixed (BGE-M3, most others). "e5" adds the required prefixes; auto-detect would be
-    # fragile, so we make it an explicit, audited knob.
+    # Prefix style for the dense model. multilingual-e5-large REQUIRES `query:`/`passage:` prefixes (v8 #4 retrieval-quality bug). Set to "none" for models that must not be prefixed (BGE-M3, most others). "e5" adds the required prefixes; auto-detect would be fragile, so we make it an explicit, audited knob.
     embed_prefix_style: str = "e5"
-    # Optional TEI (Text Embeddings Inference) endpoint — offloads the model to a GPU
-    # node. When set, embedding is done over HTTP instead of in-process.
+    # Optional TEI (Text Embeddings Inference) endpoint — offloads the model to a GPU node. When set, embedding is done over HTTP instead of in-process.
     embed_base_url: str = ""
     embed_api_key: str = ""
 
@@ -43,8 +37,7 @@ class Settings(BaseSettings):
     rerank_model: str = "BAAI/bge-reranker-v2-m3"
     rerank_device: str = "cpu"
     use_real_reranker: bool = True
-    # Provider for real reranking: "flashrank" (default, lightweight CPU Cross-Encoder,
-    # no torch) or "sentence_transformers" (full BGE-Reranker-v2-m3, heavier / GPU).
+    # Provider for real reranking: "flashrank" (default, lightweight CPU Cross-Encoder, no torch) or "sentence_transformers" (full BGE-Reranker-v2-m3, heavier / GPU).
     rerank_provider: str = "flashrank"
 
     # Tenant registry (SQLite v1; Postgres-ready)
@@ -82,14 +75,14 @@ class Settings(BaseSettings):
 
     # Redis (optional) — when set, rate limiting is shared across app replicas so a
     # VPS fleet enforces a single global per-tenant/per-IP budget. Empty = in-memory.
-    redis_url: str = ""
+    redis_url: str = "redis://localhost:6379/0"
 
     # Job queue backend configuration (v9-5)
     # Controls the backend used for job queueing across replicas.
     # Options: "inline" (default, single-replica), "redis", "rq", "celery"
     # When using external backends, configure the corresponding connection URL.
-    job_queue_backend: str = "inline"
-    job_queue_connection: str = ""  # e.g. Redis URL when backend is "redis"
+    job_queue_backend: str = "redis"
+    job_queue_connection: str = ""  # falls back to redis_url if empty
 
     # Trusted reverse-proxy CIDRs. X-Forwarded-For is ONLY trusted when the immediate
     # connection comes from one of these (otherwise a client can spoof it and bypass IP
@@ -118,27 +111,3 @@ class Settings(BaseSettings):
     # Embeddable widget (v9-3): origins allowed to embed the chat widget via
     # <iframe>. Enforced with CSP frame-ancestors. Empty = no embedding allowed.
     allowed_embed_origins: list[str] = []
-
-    # ---------------- v9-5: SLO targets ----------------
-    slo_latency_p95_s: float = 1.5      # p95 request latency target (seconds)
-    slo_availability: float = 0.995     # availability target (fraction, 99.5%)
-
-    # Audit trail (P1 #5): fraction of tenant data-plane actions (ingest/query/
-    # doc-delete/eval) written to the tamper-evident log. 1.0 = every event;
-    # lower = sampled. 0 disables data-plane auditing (admin actions always logged).
-    audit_sample_rate: float = 1.0
-
-    @field_validator("allowed_embed_origins", mode="before")
-    @classmethod
-    def _empty_str_to_list(cls, v):
-        if isinstance(v, str):
-            v = v.strip()
-            if v == "":
-                return []
-            # pydantic will JSON-decode non-empty strings; leave them for that path.
-        return v
-
-
-@lru_cache
-def get_settings() -> Settings:
-    return Settings()

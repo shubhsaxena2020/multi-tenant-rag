@@ -399,7 +399,25 @@ document.getElementById("form").onsubmit = async function (ev) {
         if (ev === "sources") { sources = data || []; }
         else if (ev === "token") { answer += data; bot.textContent = answer; log.scrollTop = log.scrollHeight; }
         else if (ev === "done") { doneData = data; }
-        else if (ev === "error") { bot.textContent = "Error: " + (data.error || "unknown"); }
+        function renderWidgetError(data) {
+  // Backend now sends {error, error_type, code?, status?, detail?}
+  // Show meaningful diagnostics instead of "Error: unknown"
+  if (data && data.error) {
+    var msg = String(data.error).trim();
+    // If the error is a generic type name, use error_type for better diagnostics
+    if (msg === "HTTPException" || msg === "RagError" || msg === "ValidationError") {
+      var errType = data.error_type || "Error";
+      bot.textContent = "Error: " + errType + " — " + msg;
+    } else {
+      bot.textContent = "Error: " + msg;
+    }
+    return;
+  }
+  // No error detail available — prompt operator to check backend logs
+  bot.textContent = "Error: query failed — check backend logs for details";
+}
+
+        else if (ev === "error") { renderWidgetError(data); }
       }
     }
     addMsg("bot", answer || "(no answer)", sources, { question: q, answer: answer });

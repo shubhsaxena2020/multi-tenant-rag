@@ -1576,8 +1576,17 @@ def query_stream(
                     "injection_detected": injection, "degraded": degraded}
             yield f"event: done\ndata: {json.dumps(done)}\n\n"
         except Exception as exc:
-            err = {"error": getattr(exc, "public_detail", type(exc).__name__)}
-            yield f"event: error\ndata: {json.dumps(err)}\n\n"
+                    # Include both the exception class name and any public_detail, plus contextual info
+                    err_detail = getattr(exc, "public_detail", None)
+                    err = {
+                        "error": err_detail or type(exc).__name__,
+                        "error_type": type(exc).__name__,
+                    }
+                    # Preserve any extra attributes the exception may have
+                    for key in ("code", "status", "detail"):
+                        if hasattr(exc, key):
+                            err[key] = getattr(exc, key)
+                    yield f"event: error\ndata: {json.dumps(err)}\n\n"
 
     return StreamingResponse(_sse(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

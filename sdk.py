@@ -36,12 +36,14 @@ class RagClient:
         self.timeout = timeout
 
     # ---------------- tenant admin ----------------
-    def create_tenant(self, name: str, plan: str = "standard", allowed_groups: list[str] | None = None) -> dict:
+    def create_tenant(self, name: str, plan: str = "standard", allowed_groups: list[str] | None = None, branding: dict | None = None) -> dict:
         if not self.admin_key:
             raise ValueError("admin_key required for tenant management")
         body = {"name": name, "plan": plan}
         if allowed_groups is not None:
             body["allowed_groups"] = allowed_groups
+        if branding is not None:
+            body["branding"] = branding
         return self._post("/tenants", body, admin=True)
 
     # ---------------- ingestion ----------------
@@ -95,6 +97,13 @@ class RagClient:
     def list_documents(self, tenant: str, *, limit: int = 200, offset: int = 0) -> dict:
         """Return the paginated document catalog: {items, total, limit, offset}."""
         return self._get(f"/{tenant}/documents", params={"limit": limit, "offset": offset})
+
+    def get_document(self, tenant: str, doc_id: str) -> dict:
+        """Return document chunks for the given doc_id.
+
+        Mirrors `GET /{tenant}/documents/{doc_id}`.
+        """
+        return self._get(f"/{tenant}/documents/{doc_id}")
 
     # ---------------- retrieval ----------------
     def query(self, tenant: str, question: str, *, top_k: int = 5, generate: bool = False,

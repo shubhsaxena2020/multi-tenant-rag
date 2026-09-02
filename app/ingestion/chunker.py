@@ -227,8 +227,7 @@ def chunk_structured(
             end_off = start_off + len(table_block)
             chunks.append(Chunk(
                 text=table_block, index=len(chunks),
-                metadata={"heading": cur_heading, "kind": "table", "is_table": True,
-                          "table_rows": max(0, len(table_lines) - 2)},
+                metadata={"heading": cur_heading, "kind": "table", "is_table": True, "table_rows": max(0, len(table_lines) - 2)},
                 char_span=(start_off, end_off),
             ))
             buf_line0 = j

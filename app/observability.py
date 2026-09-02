@@ -19,6 +19,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
     Histogram,
+    Gauge,
     generate_latest,
 )
 
@@ -41,8 +42,45 @@ REQUEST_LATENCY = Histogram(
 INGEST_JOBS = Counter(
     "rag_ingest_jobs_total", "Ingestion jobs by outcome", ["status"]
 )
+
+# Sitemap crawl latency — monitor-001
+SITEMAP_CRAWL_LATENCY = Histogram(
+    "rag_sitemap_crawl_duration_seconds",
+    "Sitemap crawl latency by outcome",
+    ["outcome"],
+    buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+)
+
+# Duplicate detection — monitor-002
+DUPLICATE_DETECTIONS = Counter(
+    "rag_duplicate_detections_total",
+    "Total duplicate URLs detected during ingestion",
+    ["tenant_id"],
+)
+
+# Robots rate-limit honoring — monitor-003
+ROBOTS_RATE_LIMIT = Counter(
+    "rag_robots_rate_limit_exceeded_total",
+    "Total robots rate-limit expirations",
+    ["tenant_id"],
+)
+
+# Queue depth gauges — monitor-004
+INGEST_QUEUE_DEPTH = Gauge(
+    "rag_ingest_queue_depth",
+    "Current number of jobs in the ingestion queue",
+    ["backend"],
+)
 INGEST_CHUNKS = Counter(
     "rag_ingest_chunks_total", "Chunks embedded+stored"
+)
+
+# P2: release/ingestion incident visibility — operators can confirm
+# incidents via /metrics; paired with an alert on sustained > 0.
+RELEASE_INCIDENTS = Counter(
+    "rag_release_incidents_total",
+    "Release or ingestion incidents by outcome",
+    ["outcome"],
 )
 RETRIEVAL_LATENCY = Histogram(
     "rag_retrieval_duration_seconds", "Retrieval (vector+rerank) latency",
@@ -97,6 +135,11 @@ def record_slo(method: str, path: str, status: int, latency: float) -> None:
     SLO_LATENCY_OBS.observe(latency)
     if status >= 500:
         DEGRADED_RESPONSES.labels(path=path).inc()
+
+
+def record_release_incident(outcome: str = "success") -> None:
+    """Record a release or ingestion incident for operators to confirm via /metrics."""
+    RELEASE_INCIDENTS.labels(outcome=outcome).inc()
 
 
 def _metric_value(sample) -> float:

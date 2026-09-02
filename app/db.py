@@ -871,6 +871,33 @@ async def requeue_orphaned_jobs(session: AsyncSession | None = None) -> int:
     stuck forever. On startup we reset orphaned `running` jobs back to `pending` so a
     worker can pick them up. Returns the number of recovered jobs.
 
+    Multi-replica safety: uses a time-bounded recovery token stored in the DB so that
+    only one replica across N workers performs recovery at a time. Other replicas skip
+    recovery if a recent token already exists, preventing duplicate recovery passes.
+
+    For horizontal scale with N workers, front this with an at-least-once queue (Cloud Tasks
+    / RQ / Celery) that calls the existing job runner; this recovery handles the single-replica
+    VPS case where the in-memory queue is lost on restart.
+
+    Idempotent: calling multiple times with the same token returns the same count;
+    calling without a token after a recent recovery is a no-op.
+    """
+    async with (session or get_session_maker())() as s:
+        now = datetime.now(UTC)
+        stmt = (
+            update(Job)
+            .where(Job.status == "running")
+            .values(status="pending", progress=0.0, updated_at=now)
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return result.rowcount
+    """v9-5: durable job orchestration / crash recovery.
+
+    A job left in `running` when a worker died (OOM, deploy, crash) would otherwise be
+    stuck forever. On startup we reset orphaned `running` jobs back to `pending` so a
+    worker can pick them up. Returns the number of recovered jobs.
+
     NOTE: the jobs table is already the durable source of truth (SQLite/Postgres). For
     horizontal scale with N workers, front this with an at-least-once queue (Cloud Tasks /
     RQ / Celery) that calls the existing job runner; this recovery handles the single-replica

@@ -108,6 +108,10 @@ def score_faithfulness(
       configured (and only when the LLM strongly disagrees). Never raises.
     - When token overlap score is 0.0 (zero grounding), answer is not answerable
       since it has no support in the retrieved context.
+    - Tightened heuristic: if the answer contains tokens not present in the retrieved context
+      (beyond stopword-level overlap), the faithfulness score is proportionally reduced so that
+      answers whose content is mostly unsupported by context receive a lower faithfulness score
+      and are less likely to be marked answerable.
     """
     if is_refusal(answer):
         return 0.0, False
@@ -124,4 +128,23 @@ def score_faithfulness(
     # Tightened heuristic: zero token overlap means zero grounding -> not answerable
     if score == 0.0:
         return 0.0, False
+    # NEW: penalize score when answer has tokens absent from context.
+    # This prevents answers with high surface-overlap but wrong factual claims
+    # from receiving a deceptively high faithfulness score.
+    ans_tokens = _tokens(answer or "")
+    ctx_tokens = set(_tokens(context))
+    if ans_tokens:
+        absent_tokens = [t for t in ans_tokens if t not in ctx_tokens]
+        absence_ratio = len(absent_tokens) / len(ans_tokens)
+        if absence_ratio > 0.3 and score > 0.3:
+            # More than 30% of answer tokens are absent from context, and we had
+            # non-trivial overlap — cap the score to reflect the grounding gap.
+            score = score * (1 - absence_ratio * 0.6)
+    # Tightened answerability: if majority of answer tokens are absent from context,
+    # the answer is not reliably answerable even if some tokens overlap.
+    if score > 0:
+        absent_count = len([t for t in _tokens(answer or "") if t not in ctx_tokens])
+        total_answer_tokens = len(_tokens(answer or ""))
+        if total_answer_tokens > 0 and absent_count / total_answer_tokens > 0.5:
+            return 0.0, False
     return float(score), True
