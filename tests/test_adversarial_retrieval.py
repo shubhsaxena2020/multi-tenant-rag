@@ -149,3 +149,90 @@ def test_prompt_contamination_source_selection():
             has_diag = "metadata" in r or "source" in r
             # At minimum result should be a dict
             assert isinstance(r, dict), "Result should be dict-like"
+def test_multi_hop_entity_disambiguation():
+    """Test that multi-hop retrieval can disambiguate between entities with the same name."""
+    """When a query references an entity that has multiple meanings (e.g. a person and their works),
+    multi-hop should retrieve relevant context for the intended meaning without crashing."""
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="Who is Aristotle and what are his works about?",
+        plan="enterprise",
+        requested_hops=2,
+        top_k=5,
+        candidate_k=10,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=5,
+        max_hops=3,
+    )
+    # Should complete at least 1 hop without crash
+    assert hop_count >= 1, "Should complete at least 1 hop"
+    # Results should have diagnostics structure if present
+    for r in results:
+        assert isinstance(r, dict), "Result should be dict-like"
+        # Should have some text or metadata
+        assert "text" in r or "metadata" in r or "source" in r, "Result should have text/metadata/source"
+
+def test_multi_hop_no_relevant_context_graceful():
+    """Test that multi-hop gracefully handles queries with no relevant context across hops."""
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="What was the lunch menu for the Titanic on its maiden voyage and who ate it?",
+        plan="enterprise",
+        requested_hops=2,
+        top_k=3,
+        candidate_k=5,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=3,
+        max_hops=3,
+    )
+    # Should not crash
+    assert hop_count >= 1, "Should complete 1 hop without crash"
+    # Empty results are acceptable; key is no exception
+    # If results returned, they should have diagnostics structure
+    for r in results:
+        assert isinstance(r, dict), "Result should be dict-like"
+
+def test_prompt_contamination_across_hops():
+    """Test that retrieval is robust to noise/irrelevant terms across multiple hops."""
+    # Query with lots of irrelevant/noisy terms
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="the cat sat on the mat and then the dog came and the bird flew away what is the capital of France and who wrote Hamlet",
+        plan="enterprise",
+        requested_hops=2,
+        top_k=3,
+        candidate_k=10,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=10,
+        max_hops=3,
+    )
+    # Should not crash and should complete requested hops
+    assert hop_count >= 1, "Should complete at least 1 hop despite noisy prompt"
+    # If results returned, they should have diagnostics
+    for r in results:
+        assert isinstance(r, dict), "Result should be dict-like"
+        assert "text" in r or "metadata" in r or "source" in r, "Result should have text/metadata/source"
+
+def test_multi_hop_ambiguous_query_with_plan():
+    """Test multi-hop retrieval with ambiguous queries under enterprise plan."""
+    results, hop_count = retrieve_multi_hop(
+        tenant_id="enterprise",
+        question="What is the effect of quantum computing on climate change and who benefits most?",
+        plan="enterprise",
+        requested_hops=2,
+        top_k=5,
+        candidate_k=10,
+        rerank=False,
+        acl_filter=None,
+        max_chunks_per_hop=5,
+        max_hops=3,
+    )
+    # Should complete at least 1 hop
+    assert hop_count >= 1, "Should complete at least 1 hop"
+    # Results should have diagnostics if present
+    for r in results:
+        assert isinstance(r, dict), "Result should be dict-like"
+        assert "text" in r or "metadata" in r or "source" in r, "Result should have text/metadata/source"

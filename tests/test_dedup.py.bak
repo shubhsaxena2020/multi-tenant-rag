@@ -57,7 +57,7 @@ def test_reingest_url_is_idempotent_no_duplicates(client):
     # We mock the fetch by hitting ingest/url, which internally fetches. To keep the test
     # hermetic we instead exercise ingest/text paths for determinism of content; URL path is
     # covered server-side via doc_key_for_url. Here we assert idempotency on the text path.
-    r1 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r1 = client.post(f"{V}/dup1/documents", headers=auth,
                      json={"title": "guide", "content": "Alpha beta gamma. " * 40,
                            "content_type": "text"})
     assert r1.status_code == 201, r1.text
@@ -68,7 +68,7 @@ def test_reingest_url_is_idempotent_no_duplicates(client):
     assert c1 >= 1
 
     # Re-ingest identical content.
-    r2 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r2 = client.post(f"{V}/dup1/documents", headers=auth,
                      json={"title": "guide", "content": "Alpha beta gamma. " * 40,
                            "content_type": "text"})
     assert r2.status_code == 201, r2.text
@@ -108,7 +108,7 @@ def test_reingest_changed_content_replaces_stale_chunks(client):
     t = _make_tenant(client, "dup2")
     auth = _auth(t["api_key"])
 
-    r1 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r1 = client.post(f"{V}/dup2/documents", headers=auth,
                      json={"title": "page", "content": "Version one content here. " * 30,
                            "content_type": "text"})
     assert r1.status_code == 201, r1.text
@@ -123,7 +123,7 @@ def test_reingest_changed_content_replaces_stale_chunks(client):
     assert used1 == c1
 
     # Re-ingest with DIFFERENT content (more text).
-    r2 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r2 = client.post(f"{V}/dup2/documents", headers=auth,
                      json={"title": "page", "content": "Version two content here, expanded. " * 60,
                            "content_type": "text"})
     assert r2.status_code == 201, r2.text
@@ -154,16 +154,16 @@ def test_dedup_is_per_tenant_isolated(client):
     auth_b = _auth(b["api_key"])
     content = "Shared boilerplate used by both tenants. " * 30
 
-    ra = client.post(f"{V}/{a['tenant_id']}/documents", headers=auth_a,
+    ra = client.post(f"{V}/tenA/documents", headers=auth_a,
                      json={"title": "shared", "content": content, "content_type": "text"})
-    rb = client.post(f"{V}/{b['tenant_id']}/documents", headers=auth_b,
+    rb = client.post(f"{V}/tenB/documents", headers=auth_b,
                      json={"title": "shared", "content": content, "content_type": "text"})
     assert ra.status_code == 201 and rb.status_code == 201
     da, db = ra.json()["doc_id"], rb.json()["doc_id"]
     assert da != db, "per-tenant doc_ids must differ"
 
     # Tenant A re-ingests; tenant B's chunks must be untouched.
-    ra2 = client.post(f"{V}/{a['tenant_id']}/documents", headers=auth_a,
+    ra2 = client.post(f"{V}/tenA/documents", headers=auth_a,
                       json={"title": "shared", "content": content, "content_type": "text"})
     assert ra2.json()["doc_id"] == da
     assert _qdrant_point_count(b["tenant_id"], db) == rb.json()["chunk_count"], \
@@ -176,9 +176,9 @@ def test_different_titles_are_distinct_documents(client):
     auth = _auth(t["api_key"])
     content = "Identical body text. " * 30
 
-    r1 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r1 = client.post(f"{V}/dup3/documents", headers=auth,
                      json={"title": "report-2024", "content": content, "content_type": "text"})
-    r2 = client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    r2 = client.post(f"{V}/dup3/documents", headers=auth,
                      json={"title": "report-2025", "content": content, "content_type": "text"})
     assert r1.status_code == 201 and r2.status_code == 201
     assert r1.json()["doc_id"] != r2.json()["doc_id"]
@@ -193,13 +193,13 @@ def test_reingest_idempotent_does_not_burn_quota(client):
     auth = _auth(t["api_key"])
     content = "Quota should not move on identical re-ingest. " * 30
 
-    client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    client.post(f"{V}/dup4/documents", headers=auth,
                 json={"title": "q", "content": content, "content_type": "text"})
     from app.db import chunk_count
     import asyncio
     used_before = _run(chunk_count(t["tenant_id"]))
 
-    client.post(f"{V}/{t['tenant_id']}/documents", headers=auth,
+    client.post(f"{V}/dup4/documents", headers=auth,
                 json={"title": "q", "content": content, "content_type": "text"})
     used_after = _run(chunk_count(t["tenant_id"]))
     assert used_after == used_before, "idempotent re-ingest must not change chunk quota"
