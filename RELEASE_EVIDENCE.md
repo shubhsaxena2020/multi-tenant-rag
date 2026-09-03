@@ -212,6 +212,23 @@ When a new milestone tag is created (e.g., `v17.03-new-milestone`):
 ```bash
 python scripts/evidence_capture.py > evidence.txt
 ```
+\n### 12. ADMIN_API_KEY Setup
+Before running smoke commands, ensure the `ADMIN_API_KEY` environment variable is set:
+
+```bash
+export ADMIN_API_KEY=test-admin-key-for-tests
+```
+
+Or source from a `.env` file:
+
+```bash
+cd /home/ubuntu/rag-service
+source .env  # Contains ADMIN_API_KEY=test-admin-key-for-tests
+```
+
+The `.env` file pattern should be added to the repository (or documented as not checked into version control) so operators can quickly set up the environment for release milestone validation.
+
+
 
 **Output sections**:
 1. TEST SUITE RESULTS - pytest command and pass/fail status
@@ -292,4 +309,4 @@ The .env file pattern should be added to the repository (or documented as not ch
 
 ### End of Audit
 
-Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.
+Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.
