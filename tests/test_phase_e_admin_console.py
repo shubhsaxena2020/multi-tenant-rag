@@ -70,6 +70,44 @@ def test_console_data_endpoints_work(client):
     assert client.get("/admin/summary", headers={"Authorization": f"Bearer {ADMIN}"}).status_code == 200
 
 
+
+def test_release_incidents_endpoint(client):
+    """PHASE E #XX — operator-visible release/ingestion incident tally.
+
+    Confirms the /admin/release-incidents endpoint returns per-outcome counts
+    from the rag_release_incidents_total counter, enabling operators to confirm
+    incidents via the API (paired with /metrics for Prometheus).
+    """
+    # When no incidents have been recorded, outcomes should all be 0
+    r = client.get("/admin/release-incidents", headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert "outcomes" in data, data
+    assert "total_incidents" in data, data
+    assert data["total_incidents"] == 0, data
+    # All outcome counts should be 0 when nothing recorded
+    for outcome, count in data["outcomes"].items():
+        assert count == 0, f"Expected 0 for {outcome}, got {count}"
+
+
+
+def test_release_incidents_with_recorded_incidents(client, tmp_path):
+    """Test release incidents endpoint with actual recorded incidents."""
+    from app.observability import record_release_incident
+
+    # Record a few incidents with different outcomes
+    record_release_incident(outcome="ingestion_completed")
+    record_release_incident(outcome="ingestion_completed")
+    record_release_incident(outcome="eval_failed")
+
+    r = client.get("/admin/release-incidents", headers={"Authorization": f"Bearer {ADMIN}"})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total_incidents"] == 3, data
+    assert data["outcomes"]["ingestion_completed"] == 2, data
+    assert data["outcomes"]["eval_failed"] == 1, data
+    # Unknown outcome should default to 0
+    assert data["outcomes"].get("unknown_outcome", 0) == 0
 def test_console_endpoints_fail_closed(client):
     # tenants list is admin-only
     assert client.get("/api/v1/tenants").status_code == 403

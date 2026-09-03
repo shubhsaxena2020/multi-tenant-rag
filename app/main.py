@@ -746,7 +746,36 @@ async def admin_summary(_: None = Depends(require_admin), days: int = 30):
     return await get_fleet_summary(days=days)
 
 
+# ---------------- Admin: release-incidents (P2) ---------------
+@app.get("/admin/release-incidents", response_model=dict)
+async def admin_release_incidents(_: None = Depends(require_admin)):
+    """Operator-visible release or ingestion incident tally.
+
+    Returns the per-outcome count from the `rag_release_incidents_total` counter so
+    operators can confirm incidents via the API (paired with `/metrics` for
+    Prometheus). Outcomes are the same labels used when recording incidents via
+    `record_release_incident(outcome=...)`.
+    """
+    from .observability import RELEASE_INCIDENTS, _metric_value
+
+    # Known outcome labels that can be recorded via record_release_incident(outcome=...)
+    known_outcomes = ["ingestion_completed", "eval_failed", "success"]
+    outcomes = {}
+    for outcome in known_outcomes:
+        outcomes[outcome] = _metric_value(RELEASE_INCIDENTS.labels(outcome=outcome))
+
+    # Include any additional outcomes that were recorded
+    for label_val in RELEASE_INCIDENTS._labelnames:
+        if label_val not in outcomes:
+            outcomes[label_val] = _metric_value(RELEASE_INCIDENTS.labels(outcome=label_val))
+
+    # Total is the sum of all per-outcome counts
+    total = sum(outcomes.values())
+
+    return {"outcomes": outcomes, "total_incidents": total}
+
 # ---------------- Admin: tenants ----------------
+
 @v1.post("/tenants", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(require_admin)):
     admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
@@ -805,6 +834,11 @@ async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(requ
 @v1.post("/{tenant}/documents", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
 async def create_document(tenant: str, body: DocumentCreate, request: Request, auth: TenantDep, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
+    # Resolve the path tenant name to a tenant_id before comparison.
+    path_tenant = await tenants.get_tenant_by_name(tenant)
+    if path_tenant is None or path_tenant.name != auth.name:
+        raise HTTPException(status_code=404, detail="not found")
     validate_content(body.content)
     ct = validate_content_type(body.content_type)
     meta = validate_metadata(body.metadata)
@@ -1237,7 +1271,11 @@ async def upload_document(
     """
     rate_limit(request, auth.tenant_id)
     # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
-    if tenant != auth.tenant_id:
+    # Resolve the path tenant name to a tenant_id before comparison.
+    path_tenant = await tenants.get_tenant_by_name(tenant)
+    if path_tenant is None or path_tenant.name != auth.name:
+        raise HTTPException(status_code=404, detail="not found")
+    # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
         raise HTTPException(status_code=404, detail="not found")
     from .ingestion.files import detect_content_type, extract_text
 
