@@ -257,6 +257,44 @@
             }
           }
         }
+      },
+      {
+        "id": 9,
+        "title": "Release Incidents \u2014 Confirmation Status",
+        "type": "stat",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 24
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(rag_release_incidents_total[1h]))",
+            "legendFormat": "release_incidents_rate",
+            "type": 0
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "",
+            "mappings": [
+              {
+                "type": "status",
+                "options": {
+                  "0": {
+                    "text": "Unconfirmed",
+                    "color": "yellow"
+                  },
+                  "1": {
+                    "text": "Confirmed",
+                    "color": "green"
+                  }
+                }
+              }
+            ]
+          }
+        }
       }
     ]
   },
