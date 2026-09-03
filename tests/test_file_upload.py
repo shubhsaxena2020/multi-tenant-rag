@@ -57,9 +57,12 @@ def _pdf_bytes(text: str = "Alpha beta gamma. Retrieval quality matters.") -> by
     return out
 
 
-def _upload(client, auth, fname, data, **extra):
+def _upload(client, auth, fname, data, tenant_id=None, **extra):
+    url = f"{V}/acme/documents/upload"
+    if tenant_id is not None:
+        url = f"{V}/{tenant_id}/documents/upload"
     return client.post(
-        f"{V}/acme/documents/upload",
+        url,
         headers=auth,
         files={"file": (fname, data)},
         data=extra,
@@ -70,7 +73,7 @@ def test_upload_markdown_ingests_and_is_queryable(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
     md = "# Onboarding\nUpload a markdown file to index knowledge.\n"
-    r = _upload(client, auth, "guide.md", md.encode())
+    r = _upload(client, auth, "guide.md", md.encode(), tenant_id=t["tenant_id"])
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["content_type"] == "markdown"
@@ -84,8 +87,9 @@ def test_upload_markdown_ingests_and_is_queryable(client):
 def test_upload_code_file(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
+    tenant_id = t["tenant_id"]
     code = "def add(a, b):\n    return a + b\n"
-    r = _upload(client, auth, "calc.py", code.encode())
+    r = _upload(client, auth, "calc.py", code.encode(), tenant_id=tenant_id)
     assert r.status_code == 201, r.text
     assert r.json()["content_type"] == "code"
     assert r.json()["chunk_count"] >= 1
@@ -94,7 +98,7 @@ def test_upload_code_file(client):
 def test_upload_pdf_extracts_real_text(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
-    r = _upload(client, auth, "whitepaper.pdf", _pdf_bytes())
+    r = _upload(client, auth, "whitepaper.pdf", _pdf_bytes(), tenant_id=t["tenant_id"])
     assert r.status_code == 201, r.text
     assert r.json()["content_type"] == "text"
     assert r.json()["chunk_count"] >= 1
@@ -107,7 +111,7 @@ def test_upload_html_strips_tags(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
     html = b"<html><head><title>x</title></head><body><p>Visible body text here.</p></body></html>"
-    r = _upload(client, auth, "page.html", html)
+    r = _upload(client, auth, "page.html", html, tenant_id=t["tenant_id"])
     assert r.status_code == 201, r.text
     assert r.json()["content_type"] == "html"
     q = client.post(f"{V}/acme/query", headers=auth,
@@ -118,14 +122,15 @@ def test_upload_html_strips_tags(client):
 def test_upload_empty_file_is_422(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
-    r = _upload(client, auth, "empty.txt", b"")
+    tenant_id = t["tenant_id"]
+    r = _upload(client, auth, "empty.txt", b"", tenant_id=tenant_id)
     assert r.status_code == 422, r.text
 
 
 def test_upload_missing_file_is_422(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
-    r = client.post(f"{V}/acme/documents/upload", headers=auth, data={})
+    r = client.post(f"{V}/{t['tenant_id']}/documents/upload", headers=auth, data={})
     assert r.status_code == 422, r.text
 
 
@@ -136,7 +141,7 @@ def test_upload_pdf_without_parser_surfaces_clear_400(client, monkeypatch):
     # Make `pypdf` unimportable so `_extract_pdf`'s `from pypdf import PdfReader` fails with
     # ImportError, which the parser converts into a clear, actionable ValueError (HTTP 400).
     monkeypatch.setitem(__import__("sys").modules, "pypdf", None)
-    r = _upload(client, auth, "doc.pdf", _pdf_bytes())
+    r = _upload(client, auth, "doc.pdf", _pdf_bytes(), tenant_id=t["tenant_id"])
     assert r.status_code == 400, r.text
     assert "pypdf" in r.text.lower()
 
@@ -154,7 +159,7 @@ def test_upload_pdf_parse_failure_is_sanitized(client, monkeypatch):
             raise RuntimeError("internal parser bomb /tmp/secret")
 
     monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=_BoomReader))
-    r = _upload(client, auth, "doc.pdf", _pdf_bytes())
+    r = _upload(client, auth, "doc.pdf", _pdf_bytes(), tenant_id=t["tenant_id"])
     assert r.status_code == 400, r.text
     assert "internal parser bomb" not in r.text
     assert "/tmp/secret" not in r.text
@@ -172,18 +177,18 @@ def test_reupload_same_file_replaces_not_duplicates(client):
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
     md = "# Guide\nStable content for idempotency check.\n"
-    r1 = _upload(client, auth, "guide.md", md.encode())
+    r1 = _upload(client, auth, "guide.md", md.encode(), tenant_id=t["tenant_id"])
     assert r1.status_code == 201, r1.text
     d1 = r1.json()["doc_id"]
-
-    r2 = _upload(client, auth, "guide.md", md.encode())
+    
+    r2 = _upload(client, auth, "guide.md", md.encode(), tenant_id=t["tenant_id"])
     assert r2.status_code == 201, r2.text
     d2 = r2.json()["doc_id"]
-
+    
     # Same file -> same doc_id (idempotent replace).
     assert d2 == d1, f"re-upload should reuse doc_id: {d1} != {d2}"
     # Catalog lists exactly one doc for this tenant (not two).
-    cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+    cat = client.get(f"{V}/{t['tenant_id']}/documents", headers=auth).json()["items"]
     uploads = [d for d in cat if d["title"] == "guide.md"]
     assert len(uploads) == 1, f"re-upload duplicated: {uploads}"
 
