@@ -469,6 +469,33 @@
             }
           }
         }
+      },
+      {
+        "id": 15,
+        "title": "Observation Coverage Heatmap",
+        "type": "heatmap",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 58
+        },
+        "targets": [
+          {
+            "expr": "sum by (severity, tenant) (count by (severity, tenant) (rag_observation_coverage_total[1h]))",
+            "legendFormat": "{{severity}}/{{tenant}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "heatmap",
+              "heatmapColorMode": "value",
+              "heatmapColor": "Viridis"
+            }
+          }
+        }
       }
     ]
   },
