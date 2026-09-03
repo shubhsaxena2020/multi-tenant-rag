@@ -1087,20 +1087,27 @@ async def session_history(
     }
 
 
-@v1.patch("/{tenant}/branding", response_model=TenantOut, status_code=status.HTTP_200_OK)
+@VERSION1_ROUTE("/{tenant}/branding", response_model=TenantOut, status_code=status.HTTP_200_OK)
 async def update_branding(tenant: str, body: TenantBranding, request: Request, _: None = Depends(require_admin)):
-    """Set/update a tenant's widget branding (admin only). Sanitized server-side."""
+    """Set/update a tenant's widget branding (admin only). Sanitized server-side.
+    
+    Supports both tenant names and tenant IDs in the path parameter.
+    """
+    # Resolve the path tenant — support both tenant names and tenant IDs,
+    # matching the pattern used in create_document
+    path_tenant = await tenants.get_tenant_by_name(tenant)
+    if path_tenant is None:
+        path_tenant = await tenants.get_tenant(tenant)
+    if path_tenant is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
     clean = sanitize_branding(body.model_dump(exclude_unset=True))
-    success = await tenants.set_tenant_branding(tenant, clean)
+    success = await tenants.set_tenant_branding(path_tenant.name, clean)
     if not success:
         raise HTTPException(status_code=404, detail="tenant not found")
-    row = await tenants.get_tenant(tenant)
-    if row is None:
-        raise HTTPException(status_code=404, detail="tenant not found")
     return TenantOut(
-        tenant_id=row.tenant_id, name=row.name, api_key=f"{row.api_key}...",
-        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
-        allowed_groups=row.allowed_groups, branding=row.branding or {},
+        tenant_id=path_tenant.tenant_id, name=path_tenant.name, api_key=f"{path_tenant.api_key}...",
+        plan=path_tenant.plan, created_at=path_tenant.created_at, chunk_count=path_tenant.chunk_count,
+        allowed_groups=path_tenant.allowed_groups, branding=path_tenant.branding or {},
     )
 
 
