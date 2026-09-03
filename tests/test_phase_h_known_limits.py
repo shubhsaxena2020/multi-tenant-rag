@@ -41,8 +41,6 @@ def test_path_tenant_mismatch_is_key_scoped(client):
     )
     assert doc.status_code == 201
 
-    # Key for tenant A, but PATH tenant is B. Expect lenient: resolved to A, returns 200.
+    # Key for tenant A, but PATH tenant is B. Fail-closed: 404 on mismatch.
     r = client.get(f"/api/v1/{b['tenant_id']}/documents", headers=_auth(a["api_key"]))
-    assert r.status_code == 200, r.text
-    titles = [d.get("title") for d in r.json().get("items", [])]
-    assert "A secret" in titles  # key's own tenant data is returned, not B's
+    assert r.status_code == 404, r.text  # KL-1: fail-closed on path-tenant/key-tenant mismatch
