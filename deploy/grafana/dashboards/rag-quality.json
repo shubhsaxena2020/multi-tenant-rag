@@ -388,6 +388,33 @@
             }
           }
         }
+      },
+      {
+        "id": 13,
+        "title": "Token Accounting Summary",
+        "type": "stat",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 48
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(rag_tokens_total[5m]))",
+            "legendFormat": "total_tokens_rate",
+            "type": 0
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "durationcounts",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       }
     ]
   },
