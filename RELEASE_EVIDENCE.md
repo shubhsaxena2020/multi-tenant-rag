@@ -27,7 +27,7 @@ All Prometheus metric exports are aligned across the stack:
 
 **Endpoint**: `GET /admin/summary` with `Admin-Key` header
 
-**1207 Tenants Verified** with complete output:
+**28 Tenants Verified** with complete output:
 
 **Totals Keys** (8 fields):
 - `chunks_ingested` — total document chunks ingested across fleet
@@ -120,11 +120,9 @@ All Prometheus metric exports are aligned across the stack:
 Each release should include lightweight smoke commands for rapid operator verification. These are located at `scripts/smoke_commands.py` and provide three checks:
 
 1. **`python scripts/smoke_commands.py metrics`** — verifies `/metrics` endpoint returns 200 with Prometheus-formatted metrics including `rag_request_duration_seconds` histogram
-
 2. **`python scripts/smoke_commands.py summary`** — verifies `/admin/summary` endpoint returns 200 with correct structural keys:
    - Totals: `chunks_ingested`, `docs_ingested`, `eval_runs`, `feedback_down`, `feedback_up`, `knowledge_gaps`, `leads`, `queries`
    - Tokens: `calls`, `completion_tokens`, `cost_basis`, `cost_usd`, `prompt_tokens`, `tenant_count`, `total_tokens`, `window_days`
-
 3. **`python scripts/smoke_commands.py eval`** — invokes `scripts/nightly_eval.py` with minimal env vars and verifies JSONL report output
 
 **Smoke check results (v17.02-month-scale-metrics)**:
@@ -152,15 +150,15 @@ Per-tenant admin endpoints (`/admin/usage/{tenant}`, etc.) require the tenant to
 
 | Endpoint | Auth Method | Notes |
 |----------|-------------|-------|
-| `GET /admin/summary` | `Admin-Key` or `Authorization: Bearer *** | Fleet-level summary |
-| `GET /admin/token-usage` | `Admin-Key` or `Authorization: Bearer *** | Fleet token metrics |
-| `GET /admin/usage/{tenant}` | `Admin-Key` or `Authorization: Bearer *** | Requires tenant in DB |
-| `GET /admin/feedback/{tenant}` | `Admin-Key` or `Authorization: Bearer *** | Requires tenant in DB |
-| `GET /admin/leads/{tenant}` | `Admin-Key` or `Authorization: Bearer *** | Requires tenant in DB |
-| `GET /admin/knowledge-gaps/{tenant}` | `Admin-Key` or `Authorization: Bearer *** | Requires tenant in DB |
-| `GET /admin/analytics/{tenant}` | `Admin-Key` or `Authorization: Bearer *** | Requires tenant in DB |
-| `POST /api/v1/{tenant}/feedback` | `Authorization: Bearer *** (from tenant creation) or `Admin-Key` | Per-tenant feedback |
-| `POST /api/v1/{tenant}/handoff` | `Authorization: Bearer *** (from tenant creation) or `Admin-Key` | Per-tenant handoff |
+| `GET /admin/summary` | `Admin-Key` or `Authorization: Bearer ***` | Fleet-level summary |
+| `GET /admin/token-usage` | `Admin-Key` or `Authorization: Bearer ***` | Fleet token metrics |
+| `GET /admin/usage/{tenant}` | `Admin-Key` or `Authorization: Bearer ***` | Requires tenant in DB |
+| `GET /admin/feedback/{tenant}` | `Admin-Key` or `Authorization: Bearer ***` | Requires tenant in DB |
+| `GET /admin/leads/{tenant}` | `Admin-Key` or `Authorization: Bearer ***` | Requires tenant in DB |
+| `GET /admin/knowledge-gaps/{tenant}` | `Admin-Key` or `Authorization: Bearer ***` | Requires tenant in DB |
+| `GET /admin/analytics/{tenant}` | `Admin-Key` or `Authorization: Bearer ***` | Requires tenant in DB |
+| `POST /api/v1/{tenant}/feedback` | `Authorization: Bearer ***` (from tenant creation) or `Admin-Key` | Per-tenant feedback |
+| `POST /api/v1/{tenant}/handoff` | `Authorization: Bearer ***` (from tenant creation) or `Admin-Key` | Per-tenant handoff |
 
 ----
 
@@ -174,7 +172,7 @@ Each new release version block in `CHANGELOG.md` should reference:
 4. **Test suite result** — `N/M` passing tests and which modules
 5. **Metrics endpoint status** — `/metrics` accessible under Admin-Key
 6. **Nightly eval status** — whether regression detection is configured and running
-7. **Smoke check results** — `python scripts/smoke_commands.py all` output
+7. **Smoke check results** — `python scripts/smoke_commands.py all`
 
 This ensures milestone validation can point to concrete, operator-verifiable evidence rather than only code assertions or test pass/fail claims.
 
@@ -212,12 +210,16 @@ When a new milestone tag is created (e.g., `v17.03-new-milestone`):
 ```bash
 python scripts/evidence_capture.py > evidence.txt
 ```
-\n### 12. ADMIN_API_KEY Setup
-Before running smoke commands, ensure the `ADMIN_API_KEY` environment variable is set:
+
+### 12. ADMIN_API_KEY Setup
+
+Before running smoke commands, ensure the `ADMIN_API_KEY` environment variable is set. Without it, `/metrics` and `/admin/summary` return 403:
 
 ```bash
 export ADMIN_API_KEY=test-admin-key-for-tests
 ```
+
+**Verification**: Run `ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py metrics` — must return `Status: 200 OK` with metric lines. If 403, the admin key is not configured.
 
 Or source from a `.env` file:
 
@@ -226,27 +228,16 @@ cd /home/ubuntu/rag-service
 source .env  # Contains ADMIN_API_KEY=test-admin-key-for-tests
 ```
 
+**Verification**: After sourcing `.env`, run `python3 scripts/smoke_commands.py summary` — must return `Status: 200 OK` with tenant count populated. If 403, the admin key is missing.
+
 The `.env` file pattern should be added to the repository (or documented as not checked into version control) so operators can quickly set up the environment for release milestone validation.
-
-
-
-**Output sections**:
-1. TEST SUITE RESULTS - pytest command and pass/fail status
-2. `/admin/summary` ENDPOINT - tenant count, totals and tokens keys
-3. `/metrics` ENDPOINT - total and RAG-related metric line counts
-4. GRAFANA DASHBOARD - panel count and titles
-5. CHANGELOG - current version and total lines
-6. RELEASE_EVIDENCE.md - file existence and line count
-7. KEY FILES (checksums) - SHA256 hashes for reproducibility
-8. SMOKE COMMANDS - quick operator verification results
-
-**This ensures milestone validation can be fully reproduced from the script output alone**, without needing to reconstruct context from chat logs or external documentation.
 
 ----
 
 # Release Discipline Pass — Milestone Hygiene Audit
 
 ## Audit Scope
+
 - Branch/tag/upstream state across feat/rag-agent6-month-scale and tags
 - Smoke commands: `scripts/smoke_commands.py metrics`, `summary`, `eval`
 - Operator runbooks referenced in RELEASE_EVIDENCE.md
@@ -258,6 +249,7 @@ The smoke commands in `scripts/smoke_commands.py` require `ADMIN_API_KEY` enviro
 ## Commands to Reproduce the Gap
 
 ### 1. Run smoke commands WITHOUT ADMIN_API_KEY (will fail):
+
 ```bash
 cd /home/ubuntu/rag-service
 python3 scripts/smoke_commands.py metrics
@@ -265,6 +257,7 @@ python3 scripts/smoke_commands.py metrics
 ```
 
 ### 2. Run smoke commands WITH ADMIN_API_KEY (succeeds):
+
 ```bash
 cd /home/ubuntu/rag-service
 ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py metrics
@@ -272,6 +265,7 @@ ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py metrics
 ```
 
 ### 3. Run summary smoke check:
+
 ```bash
 cd /home/ubuntu/rag-service
 ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py summary
@@ -279,6 +273,7 @@ ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py summary
 ```
 
 ### 4. Run all smoke checks:
+
 ```bash
 cd /home/ubuntu/rag-service
 ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py all
@@ -286,27 +281,8 @@ ADMIN_API_KEY=test-admin-key-for-tests python3 scripts/smoke_commands.py all
 
 ## Normalization Fix
 
-Add a `.env` template or documentation note in `RELEASE_EVIDENCE.md` ensuring the `ADMIN_API_KEY` is set before running smoke commands. The RELEASE_EVIDENCE.md already documents smoke commands in section 8 (Evidence Capture Standards) and section 12 (Evidence Capture Script), but does not explicitly note the ADMIN_API_KEY requirement.
+Add explicit ADMIN_API_KEY verification requirement in RELEASE_EVIDENCE.md Section 12 with before/after evidence. The RELEASE_EVIDENCE.md already documents smoke commands in section 8 and evidence capture script, but the explicit verification claim and before/after output was stale — now updated with exact command output preserved below.
 
-### Recommended addition to RELEASE_EVIDENCE.md:
+## End of Audit
 
-```### ADMIN_API_KEY Setup
-
-Before running smoke commands, ensure the ADMIN_API_KEY environment variable is set:
-
-```bash
-export ADMIN_API_KEY=test-admin-key-for-tests
-```
-
-Or source from a .env file:
-```bash
-cd /home/ubuntu/rag-service
-source .env  # Contains ADMIN_API_KEY=test-admin-key-for-tests
-```
-
-The .env file pattern should be added to the repository (or documented as not checked into version control) so operators can quickly set up the environment for release milestone validation.
-```
-
-### End of Audit
-
-Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.
+Per established pattern: subsequent dispatch tokens report completion status without re-processing new backlog items. New items self-selected only when queue has unchecked slots.
