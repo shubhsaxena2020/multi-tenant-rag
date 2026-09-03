@@ -835,8 +835,10 @@ async def delete_tenant(tenant_id: str, request: Request, _: None = Depends(requ
 async def create_document(tenant: str, body: DocumentCreate, request: Request, auth: TenantDep, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
-    # Resolve the path tenant name to a tenant_id before comparison.
+    # Resolve the path tenant — support both tenant names and tenant IDs.
     path_tenant = await tenants.get_tenant_by_name(tenant)
+    if path_tenant is None:
+        path_tenant = await tenants.get_tenant(tenant)
     if path_tenant is None or path_tenant.name != auth.name:
         raise HTTPException(status_code=404, detail="not found")
     validate_content(body.content)
