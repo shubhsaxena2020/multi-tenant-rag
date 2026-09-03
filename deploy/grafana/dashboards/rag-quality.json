@@ -442,6 +442,33 @@
             }
           }
         }
+      },
+      {
+        "id": 12,
+        "title": "Per-Tenant Quality Trend",
+        "type": "heatmap",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 42
+        },
+        "targets": [
+          {
+            "expr": "sum by (severity, tenant) (count by (severity, tenant) (rag_quality_metrics_total[1h]))",
+            "legendFormat": "{{severity}}/{{tenant}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "heatmap",
+              "heatmapColorMode": "value",
+              "heatmapColor": "Viridis"
+            }
+          }
+        }
       }
     ]
   },
