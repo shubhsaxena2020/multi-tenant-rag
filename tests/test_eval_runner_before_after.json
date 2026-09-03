@@ -1,0 +1,6 @@
+{
+  "before_fix_issue": "evaluation_runner.py main() referenced s[\"faithfulness_threshold\"] but the key was never added to the summary dict",
+  "after_fix_issue": "Added faithfulness_threshold: 0.5 to the summary dictionary at line 165 of evaluation_runner.py",
+  "verification_output": "total_queries: 12\npassed: 12\nfailed: 0\nfaithfulness_threshold: 0.5\nsingle_hop_pass: 1\nmulti_hop_pass: 1\nno_answer_pass: 1\ncitation_heavy_pass: 1\nambiguity_pass: 1\nnegation_pass: 1\npunctuation_pass: 1\nmixed_language_pass: 1\nrepeated_entities_pass: 1\nanswerability_pass: 1",
+  "commit_hash": null
+}
