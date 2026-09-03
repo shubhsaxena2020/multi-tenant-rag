@@ -101,6 +101,11 @@ NO_ANSWER_TOTAL = Counter(
     "rag_no_answer_total", "Queries that returned a safe no-answer (unanswerable / out of scope)"
 )
 
+# P1: timeout/no-response rate — distinct from safe no-answer
+RESPONSE_TOTAL = Counter(
+    "rag_no_response_total", "Queries that returned no response / timed out"
+)
+
 # ---------------- v9-5: SLO tracking ----------------
 # Availability = successful (non-5xx) responses / total. Latency SLO = p95 under target.
 SLO_AVAILABILITY = Counter(
