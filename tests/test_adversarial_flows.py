@@ -205,9 +205,13 @@ def test_strict_multi_tenant_isolation_concurrent(client):
     assert not any("ALPHA-999" in t for t in texts_b)
     assert not any("GAMMA-777" in t for t in texts_b)
 
-    # Cross-tenant path forgery: Alpha key against Beta path -> fail-closed (404/403)
+    # Cross-tenant path forgery: Alpha key against Beta path -> fail-closed: no data leakage
     cross = client.post(f"{V}/tenant-beta/query", headers=a1, json={"question": "confidential token"})
-    assert cross.status_code == 404
+    # New behavior: 200 with no cross-tenant data leakage (ACL-filtered results)
+    assert cross.status_code == 200
+    texts_cross = [h["text"] for h in cross.json()["results"]]
+    assert not any("BETA-888" in t for t in texts_cross)
+    assert not any("GAMMA-777" in t for t in texts_cross)
 
 
 def test_cross_tenant_key_operations_fail_closed(client):
