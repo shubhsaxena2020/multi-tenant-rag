@@ -185,10 +185,11 @@ def test_async_ingest_job_lifecycle(client):
         # Either success or failure is acceptable in race condition
         assert r.status_code in [200, 409]  # 200 = deleted, 409 = conflict (already completed)
         if r.status_code == 200:
-            assert r.json()["deleted"] is True
-            # after delete, get should 404
-            r = client.get(f"{V}/{t['tenant_id']}/jobs/{job_id}", headers=_auth(t["api_key"]))
-            assert r.status_code == 404
+                # Endpoint returns {"deleted": job_id}
+                assert r.json()["deleted"] == job_id
+        # after delete, get should 404
+        r = client.get(f"{V}/{t['tenant_id']}/jobs/{job_id}", headers=_auth(t["api_key"]))
+        assert r.status_code == 404
         return
     # cancel the job (only if still pending)
     r = client.delete(f"{V}/{t['tenant_id']}/jobs/{job_id}", headers=_auth(t["api_key"]))
@@ -259,6 +260,40 @@ def test_job_isolation_other_tenant_cannot_see(client):
     assert r.json()["job_id"] == job_id
 
 
+def test_job_tenant_path_mismatch_404(client):
+    """Fail-closed: path tenant must match key tenant on jobs routes.
+
+    Regression for the jobs route continuity pass (backlog #245).
+    Previously, /{tenant}/jobs/{job_id} and /{tenant}/jobs would not enforce
+    path-tenant == key-tenant matching, allowing cross-tenant access.
+    Now they return 404 on mismatch (consistent with document routes).
+    """
+    t1 = _make_tenant(client, "job-tenant-a")
+    t2 = _make_tenant(client, "job-tenant-b")
+    # tenant A ingests a job
+    body = {"url": "https://example.com/secret", "title": "secret job"}
+    r = client.post(
+        f"{V}/{t1['tenant_id']}/ingest/jobs",
+        headers=_auth(t1["api_key"]),
+        json=body,
+    )
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    # Key for tenant A, but PATH tenant is B. Fail-closed: 404 on mismatch.
+    r = client.get(f"{V}/{t2['tenant_id']}/jobs/{job_id}", headers=_auth(t1["api_key"]))
+    assert r.status_code == 404, r.text
+    # tenant A can see its own job
+    r = client.get(f"{V}/{t1['tenant_id']}/jobs/{job_id}", headers=_auth(t1["api_key"]))
+    assert r.status_code == 200
+    assert r.json()["job_id"] == job_id
+
+    # Also test delete route
+    r = client.delete(f"{V}/{t2['tenant_id']}/jobs/{job_id}", headers=_auth(t1["api_key"]))
+    assert r.status_code == 404, r.text
+    r = client.delete(f"{V}/{t1['tenant_id']}/jobs/{job_id}", headers=_auth(t1["api_key"]))
+    assert r.status_code == 200
+
+
 def test_validation_rejects_oversized_content(client):
     t = _make_tenant(client, "acme")
     # oversized text ( > 1MB )
@@ -292,7 +327,8 @@ def test_job_list_and_delete(client):
     job_id = jobs[1]["job_id"]
     r = client.delete(f"{V}/{t['tenant_id']}/jobs/{job_id}", headers=_auth(t["api_key"]))
     assert r.status_code == 200
-    assert r.json()["deleted"] is True
+    # The endpoint returns {"deleted": job_id}
+    assert r.json()["deleted"] == job_id
     # list again, should have 2 jobs
     r = client.get(f"{V}/{t['tenant_id']}/jobs", headers=_auth(t["api_key"]))
     assert r.status_code == 200

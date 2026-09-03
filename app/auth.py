@@ -30,9 +30,14 @@ def generate_publishable_key() -> str:
 
 
 async def get_tenant_from_header(
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    authorization: str | None = Header(default=None),
 ) -> tenants.TenantRow:
-    if not authorization or not authorization.lower().startswith("bearer "):
+    # Normalize: if dict received (e.g. from TestClient), extract string auth value
+    if isinstance(authorization, dict):
+        auth_val = authorization.get("authorization") or authorization.get("Authorization")
+        if auth_val is not None:
+            authorization = auth_val
+    if not authorization or not str(authorization).lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header",
@@ -47,7 +52,7 @@ async def get_tenant_from_header(
 
 
 async def require_secret_key(
-    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+    authorization: str | None = Header(default=None),
 ) -> None:
     """P1 #9: gate write/admin routes to full-power SECRET keys (rk_*).
 
@@ -57,12 +62,14 @@ async def require_secret_key(
     The tenant_id is still derived server-side from the key (no body trust); this only
     adds a scope check on the key tier.
     """
-    if not authorization or not authorization.lower().startswith("bearer "):
+    if not authorization or not str(authorization).lower().startswith("bearer "):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header",
         )
     key = authorization.split(" ", 1)[1].strip()
+    if not key:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty API key")
     kind = await tenants.get_key_kind(key)
     if kind != "secret":
         raise HTTPException(
@@ -73,19 +80,21 @@ async def require_secret_key(
 
 def require_admin(
     admin_key: Annotated[str | None, Header(alias="Admin-Key")] = None,
-    authorization: Annotated[str | None, Header()] = None,
+    authorization: str | None = Header(default=None),
 ) -> None:
     """Guard tenant admin operations. If ADMIN_API_KEY is configured, the
-    Admin-Key header (or `Authorization: Bearer <key>`) must match; otherwise
-    (dev) admin is open. Accepting the standard Authorization Bearer form lets
-    Prometheus scrape /metrics via its native `authorization` block."""
+    Admin-Key header (or Authorization: Bearer *** must match; otherwise
+    admin is fail-closed (403). There is no "open by default" dev mode.
+    Accepting the standard Authorization Bearer form lets Prometheus scrape
+    /metrics via its native `authorization` block.
+    """
     settings = get_settings()
     if not settings.admin_api_key:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Admin API key not set"
         )
     provided = admin_key
-    if authorization and authorization.lower().startswith("bearer "):
+    if not provided and authorization and str(authorization).lower().startswith("bearer "):
         provided = authorization.split(" ", 1)[1].strip()
     if provided != settings.admin_api_key:
         raise HTTPException(
