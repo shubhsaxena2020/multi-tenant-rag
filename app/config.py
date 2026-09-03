@@ -5,8 +5,14 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    audit_sample_rate: float = 1.0
 
     # Vector store
     qdrant_url: str = "http://localhost:6333"
@@ -42,6 +48,12 @@ class Settings(BaseSettings):
 
     # Tenant registry (SQLite v1; Postgres-ready)
     db_url: str = "sqlite:///./rag_tenants.db"
+
+    # SLO (v9-5) config
+    slo_availability_target: float = 0.95
+    slo_latency_target_s: float = 1.0
+    slo_latency_p95_s: float = 0.5
+    slo_availability: float = 0.99
 
     # Auth
     api_key_header: str = "authorization"
