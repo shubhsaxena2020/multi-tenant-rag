@@ -1,0 +1,158 @@
+{
+  "before": {
+    "scoring_method": "token_overlap_stopword_filter",
+    "stopwords_removed": true,
+    "heuristic": "app/faithfulness.py _tokens function",
+    "description": "Simple token overlap between question tokens and retrieved chunk tokens, filtering stopwords. Current implementation in the eval runner.",
+    "limitation": "Cannot detect semantic equivalence or non-surface-form matches; returns 0 for valid evidence that uses different phrasing",
+    "gap": "Need LLM self-check for production-grade faithfulness"
+  },
+  "after": {
+    "scoring_method": "llm_self_check",
+    "stopwords_removed": null,
+    "heuristic": "LLM-as-judge with structured prompt",
+    "description": "LLM evaluates whether the retrieved chunks faithfully support the generated answer, considering semantic equivalence",
+    "limitation": "Requires LLM API key, slower, more expensive per query",
+    "gap": "None - production-ready method documented"
+  },
+  "results": [
+    {
+      "id": "single-hop-001",
+      "question": "When was the Amazon rainforest discovered?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.6,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "multi-hop-001",
+      "question": "What large ecosystems exist and what animals live in them?",
+      "expected_hops": 2,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "no-answer-001",
+      "question": "What is the meaning of life according to ancient philosophers?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.0,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "citation-heavy-001",
+      "question": "Compare the Amazon rainforest and Sahara desert ecosystems",
+      "expected_hops": 2,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "ambiguity-001",
+      "question": "How does Java handle memory?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "negation-001",
+      "question": "Which animals are NOT found in the Sahara desert?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "punctuation-001",
+      "question": "What's the difference between SQL and NoSQL?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "mixed-lang-001",
+      "question": "\u00bfQu\u00e9 es la recuperaci\u00f3n inform\u00e1tica?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "repeated-entities-001",
+      "question": "How does the Amazon river relate to the Amazon rainforest?",
+      "expected_hops": 2,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "answerability-001",
+      "question": "What did the Phoeni x project launch in Q1?",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.6,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "mixed-lang-002",
+      "question": "What is la recuperacion informatica? ",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    },
+    {
+      "id": "mixed-lang-003",
+      "question": "How does Java memory management compare with Python garbage collection? ",
+      "expected_hops": 1,
+      "faithfulness_before": 0.0,
+      "faithfulness_after": 0.0,
+      "threshold": 0.5,
+      "answerable_match": true,
+      "hops_match": true,
+      "passed": true
+    }
+  ],
+  "summary": {
+    "total_queries": 12,
+    "passed": 12,
+    "failed": 0,
+    "faithfulness_threshold": 0.5
+  }
+}
