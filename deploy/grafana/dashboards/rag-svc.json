@@ -295,6 +295,33 @@
             ]
           }
         }
+      },
+      {
+        "id": 10,
+        "title": "Release Incidents \u2014 Duration Heatmap",
+        "type": "heatmap",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 30
+        },
+        "targets": [
+          {
+            "expr": "sum by (severity, tenant) (count by (severity, tenant) (rag_release_incidents_duration_seconds_bucket[1h]))",
+            "legendFormat": "{{severity}}/{{tenant}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "heatmap",
+              "heatmapColorMode": "value",
+              "heatmapColor": "Viridis"
+            }
+          }
+        }
       }
     ]
   },

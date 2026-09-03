@@ -2,7 +2,7 @@
   "dashboard": {
     "id": null,
     "uid": "rag-quality",
-    "title": "RAG Service — Retrieval Quality",
+    "title": "RAG Service \u2014 Retrieval Quality",
     "tags": [
       "rag",
       "quality",
@@ -278,7 +278,7 @@
       },
       {
         "id": 9,
-        "title": "Severity Heatmap — Alert Correlation (1h)",
+        "title": "Severity Heatmap \u2014 Alert Correlation (1h)",
         "type": "heatmap",
         "gridPos": {
           "h": 6,
@@ -305,7 +305,7 @@
       },
       {
         "id": 10,
-        "title": "Release Incidents — Total + orphaned jobs",
+        "title": "Release Incidents \u2014 Total + orphaned jobs",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -337,7 +337,7 @@
       },
       {
         "id": 11,
-        "title": "Release Incidents — Per-tenant breakdown",
+        "title": "Release Incidents \u2014 Per-tenant breakdown",
         "type": "timeseries",
         "gridPos": {
           "h": 6,
@@ -358,6 +358,33 @@
             "custom": {
               "drawStyle": "line",
               "lineWidth": 2
+            }
+          }
+        }
+      },
+      {
+        "id": 12,
+        "title": "Release Incidents \u2014 Duration Heatmap",
+        "type": "heatmap",
+        "gridPos": {
+          "h": 6,
+          "w": 24,
+          "x": 0,
+          "y": 42
+        },
+        "targets": [
+          {
+            "expr": "sum by (severity, tenant) (count by (severity, tenant) (rag_release_incidents_duration_seconds_bucket[1h]))",
+            "legendFormat": "{{severity}}/{{tenant}}"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "heatmap",
+              "heatmapColorMode": "value",
+              "heatmapColor": "Viridis"
             }
           }
         }
