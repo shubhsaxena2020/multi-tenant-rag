@@ -1,0 +1,20 @@
+{
+  "pass": "retrieval_recovery",
+  "timestamp": "2026-09-03 05:37:00 UTC",
+  "tests_passed": 5,
+  "test_details": [
+    "Cross-tenant isolation regression: 0 results, 1 hop completed",
+    "No-answer / refusal detection: all refusal patterns validated",
+    "Faithfulness zero overlap, no context: score=0.0, answerable=False",
+    "Faithfulness non-trivial overlap: score>0.0, answerable=True",
+    "Multi-hop cross-tenant isolation: hops completed with diagnostics"
+  ],
+  "verification": "All trust gaps preserved, no auth/path policy behavior altered",
+  "golden_set": "12/12 queries pass in enhanced_evaluation_report.json",
+  "existing_evidence_files": [
+    "tests/llm_self_check_evidence.json",
+    "tests/test_negation_across_hops_before_after.json",
+    "tests/ssrf_prompt_injection_evidence.json",
+    "tests/answerability_faithfulness_evidence.json"
+  ]
+}

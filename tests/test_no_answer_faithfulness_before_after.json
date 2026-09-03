@@ -1,0 +1,12 @@
+{
+  "before": {
+    "hop_count": 1,
+    "result_count": 0,
+    "question": "What is the lunch menu for the Titanic on its maiden voyage?"
+  },
+  "after": {
+    "hop_count": 1,
+    "result_count": 0,
+    "question": "What is the lunch menu for the Titanic on its maiden voyage?"
+  }
+}

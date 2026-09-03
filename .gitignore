@@ -23,3 +23,20 @@ test_rag_tenants.db
 .models/
 *.onnx
 embed_cache/
+
+# Debug / backup artifacts — never commit
+*.backup*
+*.bak*
+.fixed*
+.start
+debug_*.py
+debug_*.sh
+debug_*.yml
+debug_*.yaml
+_debug*
+COMMIT_SUMMARY.md
+_check_*.py
+_check_*.sh
+logs/
+hermes-agent/
+*.egg-info/

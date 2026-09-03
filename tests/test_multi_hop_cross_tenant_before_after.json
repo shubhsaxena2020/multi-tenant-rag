@@ -1,0 +1,12 @@
+{
+  "before": {
+    "question": "What did the enterprise policy say about the billing system? And what about the latency requirements?",
+    "hop_count": null,
+    "result_count": null
+  },
+  "after": {
+    "question": "What did the enterprise policy say about the billing system? And what about the latency requirements?",
+    "hop_count": 1,
+    "result_count": 0
+  }
+}

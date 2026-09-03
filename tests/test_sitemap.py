@@ -96,7 +96,7 @@ def test_sitemap_crawl_ingests_pages(client, patched_fetch):
     assert final["status"] == "completed", final
     assert final["urls_ingested"] == 2, final
 
-    cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+    cat = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
     assert len(cat) == 2, cat
     titles = {d["title"] for d in cat}
     assert {"https://example.com/a", "https://example.com/b"} <= titles
@@ -114,12 +114,12 @@ def test_sitemap_recrawl_replaces_not_duplicates(client, patched_fetch):
         return r.json()["job_id"]
 
     _poll_sitemap_job(client, auth, _run())
-    cat1 = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+    cat1 = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
     assert len(cat1) == 2, cat1
 
     # Second crawl of the same sitemap -> still 2 docs (replaced), not 4.
     _poll_sitemap_job(client, auth, _run())
-    cat2 = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+    cat2 = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
     assert len(cat2) == 2, f"recrawl duplicated docs: {cat2}"
 
 
@@ -151,7 +151,7 @@ def test_sitemap_respects_robots_disallow(client, monkeypatch):
     final = _poll_sitemap_job(client, auth, r.json()["job_id"])
     assert final["status"] == "completed", final
     assert final["urls_ingested"] == 1, final
-    cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+    cat = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
     assert len(cat) == 1 and cat[0]["title"] == "https://example.com/a", cat
 
 
@@ -247,7 +247,7 @@ def test_sitemapindex_recursion(client, monkeypatch):
         assert final["status"] == "completed", final
         # The index points at child-sitemap.xml which lists page /b only.
         assert final["urls_ingested"] == 1, final
-        cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+        cat = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
         assert len(cat) == 1 and cat[0]["title"] == "https://example.com/b", cat
     finally:
         ssrf.safe_fetch_url = orig
@@ -279,7 +279,7 @@ def test_root_domain_onboard_crawls(client):
         final = _poll_sitemap_job(client, auth, r.json()["job_id"])
         assert final["status"] == "completed", final
         assert final["urls_ingested"] == 2, final
-        cat = client.get(f"{V}/acme/documents", headers=auth).json()["items"]
+        cat = client.get("{}/{}".format(V, t["tenant_id"]) + "/documents", headers=auth).json()["items"]
         assert len(cat) == 2, cat
     finally:
         ssrf.safe_fetch_url = orig

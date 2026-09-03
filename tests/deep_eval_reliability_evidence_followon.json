@@ -1,0 +1,23 @@
+{
+  "total_queries": 12,
+  "passed": 12,
+  "failed": 0,
+  "faithfulness_threshold": 0.5,
+  "bucket_passes": {
+    "single_hop_pass": 1,
+    "multi_hop_pass": 1,
+    "no_answer_pass": 1,
+    "citation_heavy_pass": 1,
+    "ambiguity_pass": 1,
+    "negation_pass": 1,
+    "punctuation_pass": 1,
+    "mixed_language_pass": 1,
+    "repeated_entities_pass": 1,
+    "answerability_pass": 1
+  },
+  "verified_contracts": [
+    "No answer + no evidence => score=0.0",
+    "Wrong answer + no evidence => score=0.0",
+    "Correct answer + evidence => score>0.0"
+  ]
+}

@@ -1,0 +1,24 @@
+Deep eval reliability pass: verification evidence
+
+Verified contracts for score_faithfulness() in tests/evaluation_runner.py:
+
+Case 1: No answer, no evidence
+  Input: q='What is the meaning of life according to ancient philosophers?', evidence=[]
+  Output: score=0.0
+  Contract: No answer with no evidence should give score=0.0 ✓
+
+Case 2: Wrong answer, no evidence  
+  Input: q='The Amazon rainforest is in Africa', evidence=[]
+  Output: score=0.0
+  Contract: Wrong answer with no evidence should give score=0.0 ✓
+
+Case 3: Correct answer, with evidence
+  Input: q='The Amazon rainforest is in South America', evidence=['Amazon rainforest is in South America']
+  Output: score=1.0
+  Contract: Correct answer with supporting evidence should give score>0.0 ✓
+
+All 12/12 golden set queries pass with faithfulness_threshold=0.5
+
+Verification command: python tests/evaluation_runner.py
+Output: total_queries: 12, passed: 12, failed: 0, faithfulness_threshold: 0.5
+

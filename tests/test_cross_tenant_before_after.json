@@ -1,0 +1,14 @@
+{
+  "before": {
+    "tenant_a_results": 0,
+    "tenant_b_results": 0,
+    "hop_count_a": 1,
+    "hop_count_b": 1
+  },
+  "after": {
+    "tenant_a_results": 0,
+    "tenant_b_results": 0,
+    "hop_count_a": 1,
+    "hop_count_b": 1
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "before": {
+    "answer": null,
+    "context_chunks": [
+      "The Titanic sank in the North Atlantic Ocean in 1912."
+    ],
+    "faithfulness": 0.0,
+    "answerable": false
+  },
+  "after": {
+    "answer": null,
+    "context_chunks": [
+      "The Titanic sank in the North Atlantic Ocean in 1912."
+    ],
+    "faithfulness": 0.0,
+    "answerable": false
+  }
+}

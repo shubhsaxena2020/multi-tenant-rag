@@ -1,0 +1,14 @@
+{
+  "before": {
+    "question": "What did the document say about the identity service and billing latency specifically?",
+    "hop_count": null,
+    "result_count": null,
+    "results_preview": []
+  },
+  "after": {
+    "question": "What did the document say about the identity service and billing latency specifically?",
+    "hop_count": 1,
+    "result_count": 0,
+    "results_preview": []
+  }
+}

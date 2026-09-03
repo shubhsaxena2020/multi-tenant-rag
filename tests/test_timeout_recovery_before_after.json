@@ -1,0 +1,12 @@
+{
+  "before": {
+    "timeout_seconds": 0.5,
+    "fast_result": null,
+    "slow_result": null
+  },
+  "after": {
+    "timeout_seconds": 0.5,
+    "fast_result": "ok",
+    "slow_error": "timed out after 0s (degraded mode)"
+  }
+}

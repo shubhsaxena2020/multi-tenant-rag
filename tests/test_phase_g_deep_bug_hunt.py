@@ -23,7 +23,8 @@ ADMIN = {"Admin-Key": "test-admin-key-for-tests"}
 
 def test_onboarding_tenant_create_returns_structured_data():
     """tenant-create should always return {tenant_id, api_key, name, plan} —
-    the widget and SDKs depend on these keys being present."""
+    the widget and SDKs depend on these keys being present.
+    """
     r = client.post("/api/v1/tenants", json={"name": "ontest"}, headers=ADMIN)
     assert r.status_code == 201, r.text
     body = r.json()
@@ -37,7 +38,8 @@ def test_onboarding_tenant_create_returns_structured_data():
 def test_widget_config_always_returns_valid_json():
     """Widget config endpoint must return valid JSON even when tenant has no branding.
     If it returns 200 with a body that's not valid JSON or missing expected keys,
-    the widget crashes with 'Error: unknown' — the most expensive confusion point."""
+    the widget crashes with 'Error: unknown' — the most expensive confusion point.
+    """
     r = client.post("/api/v1/tenants", json={"name": "widget-test"}, headers=ADMIN)
     assert r.status_code == 201, r.text
     tid = r.json()["tenant_id"]
@@ -55,7 +57,8 @@ def test_widget_query_no_docs_returns_structured_empty():
     """When no docs are ingested and generate=False, the query should return
     a structured response with an empty results list and a note, NOT a 500
     or 'Error: unknown'. This is the most expensive confusion point —
-    operators think the system broke when it's just empty."""
+    operators think the system broke when it's just empty.
+    """
     r = client.post("/api/v1/tenants", json={"name": "empty-test"}, headers=ADMIN)
     assert r.status_code == 201, r.text
     tid = r.json()["tenant_id"]
@@ -85,7 +88,8 @@ def test_widget_query_no_docs_returns_structured_empty():
 def test_admin_console_empty_state_user_friendly():
     """Admin console should show 'none ingested' for empty doc sets, not raw JSON
     or a traceback. The HTML template already handles this with
-    '${docList.length ? '' : '<tr><td colspan="3" class="muted">none ingested</td></tr>'}.'"""
+    '${docList.length ? '' : '<tr><td colspan="3" class="muted">none ingested</td></tr>"}.'
+    """
     r = client.get("/admin/console")
     assert r.status_code == 200, r.text
     body = r.text
@@ -96,7 +100,8 @@ def test_admin_console_empty_state_user_friendly():
 def test_sdk_query_contract_has_error_field():
     """SDK query response must include an `error` field when the query fails,
     so the client can display meaningful text instead of 'Error: unknown'.
-    This is the direct fix for the most expensive confusion point."""
+    This is the direct fix for the most expensive confusion point.
+    """
     r = client.post("/api/v1/tenants", json={"name": "sdk-test"}, headers=ADMIN)
     assert r.status_code == 201, r.text
     tid = r.json()["tenant_id"]
@@ -109,20 +114,27 @@ def test_sdk_query_contract_has_error_field():
 
 
 def test_widget_error_fallback_not_unknown():
-    """The widget's error handler must NOT fall back to literally 'unknown'.
-    Line 402 of widget.html: bot.textContent = 'Error: ' + (data.error || 'unknown');
-    If data.error is missing/undefined, operators see 'Error: unknown' — useless.
-    This test verifies the fallback is at least a useful message."""
+    """The widget's error handler has been hardened to show error_type prominently
+    instead of falling back to 'unknown'. The new renderWidgetError function
+    displays the error message and error_type for operator diagnostics.
+    """
     with open("app/static/widget.html", "r") as f:
         widget_html = f.read()
 
-    # Verify the fallback is present as a safety net
-    assert 'data.error || "unknown"' in widget_html, (
-        "Widget error fallback missing — operators would see literally 'Error: ' "
-        "with no diagnostic info"
+    # The new renderWidgetError function provides meaningful diagnostics:
+    # - Shows the error message and error_type for operator visibility
+    # - Falls back to prompting operators to check backend logs
+    assert "function renderWidgetError" in widget_html, (
+        "Missing renderWidgetError function — operators would see no improved diagnostics"
     )
-
-    # The 'unknown' fallback should ideally be a more helpful message
-    # e.g., 'Error: ' + (data.error || 'query failed — see logs')
-    # But at minimum, the || 'unknown' guard must exist
-    assert 'unknown' in widget_html, "No 'unknown' string fallback found in widget error handler"
+    assert "Type: " in widget_html, (
+        "Widget should display error_type prominently for operator diagnostics"
+    )
+    # The old unsafe 'data.error || unknown' pattern should NOT be present
+    assert 'data.error || "unknown"' not in widget_html, (
+        "Old unsafe fallback still present — operators could see literally Error: with no info"
+    )
+    # The new fallback prompt should be present
+    assert "check backend logs" in widget_html, (
+        "New fallback prompt to check backend logs should be present"
+    )

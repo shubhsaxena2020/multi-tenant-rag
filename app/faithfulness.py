@@ -21,6 +21,7 @@ _STOPWORDS = {
     "could", "should", "would", "will", "may", "might", "do", "does", "did", "has", "have",
     "had", "yes", "if", "then", "than", "so", "there", "here", "about", "into",
     "over", "under", "between", "both", "each", "more", "most", "other", "some", "such", "only",
+    "sorry",
 }
 
 
@@ -48,6 +49,7 @@ def is_refusal(answer: str | None) -> bool:
         "i dont know", "i do not know", "i cannot", "i cant",
         "no information", "dont have information", "do not have information",
         "imsorry", "isorry", "unable to", "cant help", "cannot help",
+        "sorry",
     )
     return any(m in norm for m in markers)
 

@@ -1,0 +1,12 @@
+{
+  "before": {
+    "question": "Who is the president of the United States? Banana.",
+    "hop_count": null,
+    "result_count": null
+  },
+  "after": {
+    "question": "Who is the president of the United States? Banana.",
+    "hop_count": 1,
+    "result_count": 0
+  }
+}

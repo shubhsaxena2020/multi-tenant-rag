@@ -1,0 +1,12 @@
+{
+  "before": {
+    "question": "What are the symptoms of carbon monoxide poisoning? How do they compare to flu symptoms?",
+    "hop_count": null,
+    "result_count": null
+  },
+  "after": {
+    "question": "What are the symptoms of carbon monoxide poisoning? How do they compare to flu symptoms?",
+    "hop_count": 1,
+    "result_count": 0
+  }
+}

@@ -17,15 +17,16 @@ def _make_tenant(client, name):
 
 def test_sse_streaming_query(client):
     """v9-3: /{tenant}/query/stream emits sources + token + done SSE events."""
-    t = _make_tenant(client, "sse")
+    t = _make_tenant(client, "sse-q")
     key = t["api_key"]
     auth = {"Authorization": f"Bearer {key}"}
+    # First, add a document so the stream has content
     client.post(
-        f"{V}/sse/documents", headers=auth,
+        f"{V}/{t['tenant_id']}/documents", headers=auth,
         json={"title": "facts", "content": "The Eiffel Tower is in Paris. It was completed in 1889.", "content_type": "text"},
     )
     resp = client.post(
-        f"{V}/sse/query/stream", headers=auth,
+        f"{V}/{t['tenant_id']}/query/stream", headers=auth,
         json={"question": "where is the Eiffel Tower?", "generate": True, "top_k": 3},
     )
     assert resp.status_code == 200
@@ -46,10 +47,11 @@ def test_sse_streaming_query(client):
         if ev:
             events.append(ev)
     kinds = [e["event"] for e in events]
-    assert "sources" in kinds
-    assert "done" in kinds
+    assert "sources" in kinds, f"expected 'sources' event, got kinds={kinds}"
+    assert "done" in kinds, f"expected 'done' event, got kinds={kinds}"
     tokens = [e["data"] for e in events if e["event"] == "token"]
-    assert "".join(tokens).strip()
+    assert len(tokens) > 0, f"expected token events with content, got tokens={tokens}"
+    assert "".join(tokens).strip(), f"expected non-empty token content, got empty string from tokens={tokens}"
 
 
 def test_sse_streaming_rate_limited(client, monkeypatch):
@@ -72,7 +74,7 @@ def test_sse_streaming_rate_limited(client, monkeypatch):
     limited = False
     for _ in range(10):
         r = client.post(
-            f"{V}/sse-rl/query/stream", headers=auth,
+            f"{V}/{t['tenant_id']}/query/stream", headers=auth,
             json={"question": "any", "top_k": 1},
         )
         if r.status_code == 429:

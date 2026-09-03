@@ -121,7 +121,7 @@ def reset_limiter(backend: str = "memory"):
     return _limiter
 
 
-_limiter = None  # lazily built on first use (see _get_limiter)
+_limiter: object | None = None  # lazily built on first use (see _get_limiter)
 
 
 def _get_limiter() -> object:
@@ -133,7 +133,7 @@ def _get_limiter() -> object:
     ordering without re-checking every request.
     """
     global _limiter
-    if _limiter is None or (get_settings().redis_url and not isinstance(_limiter, _RedisLimiter)):
+    if _limiter is None:
         _limiter = _build()
     return _limiter
 

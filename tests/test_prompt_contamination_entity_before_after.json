@@ -1,0 +1,12 @@
+{
+  "before": {
+    "hop_count": 1,
+    "result_count": 0,
+    "question": "What did Apple announce at their annual event and what about Microsoft? the cat sat on the mat and then the dog came"
+  },
+  "after": {
+    "hop_count": 1,
+    "result_count": 0,
+    "question": "What did Apple announce at their annual event and what about Microsoft? the cat sat on the mat and then the dog came"
+  }
+}

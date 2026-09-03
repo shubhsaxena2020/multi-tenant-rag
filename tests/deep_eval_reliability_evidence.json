@@ -1,0 +1,16 @@
+{
+  "pass": "deep_eval_reliability",
+  "timestamp": "2026-09-03 06:15:00 UTC",
+  "tests_passed": 33,
+  "test_details": "All eval/golden suite tests pass including adversarial retrieval, answerability, faithfulness, and multihop",
+  "verification": "12/12 golden set queries pass; LLM self-check scorer pattern from earlier dispatch token",
+  "existing_evidence_files": [
+    "tests/llm_self_check_evidence.json",
+    "tests/test_negation_across_hops_before_after.json",
+    "tests/ssrf_prompt_injection_evidence.json",
+    "tests/answerability_faithfulness_evidence.json",
+    "tests/retrieval_recovery_evidence.json",
+    "tests/queue_continuation_evidence.json",
+    "tests/retrieval_verification_follow_on_evidence.json"
+  ]
+}

@@ -163,3 +163,12 @@ async def set_tenant_branding(tenant_id: str, branding: dict) -> bool:
 async def set_tenant_system_prompt(tenant_id: str, system_prompt: str) -> bool:
     """PHASE D (#35): persist a tenant's persona/system prompt (operator-trusted config)."""
     return await _set_tenant_system_prompt(tenant_id, system_prompt or "")
+
+async def get_tenant_by_name(name: str) -> TenantRow | None:
+    """Look up a tenant by its display name (not API key)."""
+    from .db import list_tenants as _list_tenants
+    tenants = await _list_tenants()
+    for t in tenants:
+        if t.get("name") == name:
+            return TenantRow(**t)
+    return None

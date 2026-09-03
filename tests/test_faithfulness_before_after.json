@@ -1,0 +1,22 @@
+{
+  "before": {
+    "test1_no_context": {
+      "score": 0.0,
+      "answerable": false,
+      "claim": "moon cheese",
+      "context": "none"
+    },
+    "test2_refusal": {
+      "score": 0.0,
+      "answerable": false,
+      "claim": "refusal",
+      "context": "provided"
+    },
+    "test3_with_context": {
+      "score": 1.0,
+      "answerable": true,
+      "claim": "capital of France",
+      "context": "provided"
+    }
+  }
+}
