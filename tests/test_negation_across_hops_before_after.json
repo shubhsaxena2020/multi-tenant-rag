@@ -1,0 +1,18 @@
+{
+  "before": {
+    "hop_count": 1,
+    "result_count": 0,
+    "results": []
+  },
+  "after": {
+    "hop_count": 1,
+    "result_count": 0,
+    "results": []
+  },
+  "test_info": {
+    "question": "Which animals are NOT found in the Amazon rainforest and what are their habitats?",
+    "plan": "enterprise",
+    "requested_hops": 2,
+    "max_hops": 3
+  }
+}
