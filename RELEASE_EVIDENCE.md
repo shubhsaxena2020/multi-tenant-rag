@@ -27,7 +27,7 @@ All Prometheus metric exports are aligned across the stack:
 
 **Endpoint**: `GET /admin/summary` with `Admin-Key` header
 
-**28 Tenants Verified** with complete output:
+30:**1222 Tenants Verified** with complete output:
 
 **Totals Keys** (8 fields):
 - `chunks_ingested` — total document chunks ingested across fleet
