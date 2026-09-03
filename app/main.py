@@ -1590,20 +1590,20 @@ def query_stream(
             yield f"event: sources\ndata: {json.dumps(sources)}\n\n"
 
             answer = None
+            collected: list[str] = []
+            stream_usage: dict | None = None
+            for tok, tok_usage in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
+                collected.append(tok)
+                if tok_usage:
+                    stream_usage = tok_usage
+                yield f"event: token\ndata: {json.dumps(tok)}\n\n"
+            answer = "".join(collected)
+
             if body.generate:
                 if injection:
                     answer = "I can't follow those instructions. Ask me a question about the documented content and I'll help."
                 elif not in_scope:
                     answer = "I don't have information on that in the available documents. Let me connect you with support, or try rephrasing your question."
-                    # Still stream tokens from available context even when out-of-scope
-                    collected: list[str] = []
-                    stream_usage: dict | None = None
-                    for tok, tok_usage in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
-                        collected.append(tok)
-                        if tok_usage:
-                            stream_usage = tok_usage
-                        yield f"event: token\ndata: {json.dumps(tok)}\\n\\n"
-                    answer = "".join(collected) or answer
                     # PHASE E (#14): meter tokens (estimated when no LLM provider configured).
                     if stream_usage:
                         record_token_usage_bg(
@@ -1614,15 +1614,15 @@ def query_stream(
                             model=get_settings().llm_model, session_id=body.session_id,
                         )
                 else:
-                    collected: list[str] = []
-                    stream_usage: dict | None = None
-                    for tok, tok_usage in stream_answer(rewritten, hits, system_prompt=auth.system_prompt or ""):
-                        collected.append(tok)
-                        if tok_usage:
-                            stream_usage = tok_usage
-                        yield f"event: token\ndata: {json.dumps(tok)}\n\n"
-                    answer = "".join(collected)
                     # PHASE E (#14): meter tokens (estimated when no LLM provider configured).
+                    if stream_usage:
+                        record_token_usage_bg(
+                            auth.tenant_id, prompt_tokens=stream_usage.get("prompt_tokens", 0),
+                            completion_tokens=stream_usage.get("completion_tokens", 0),
+                            total_tokens=stream_usage.get("total_tokens", 0),
+                            estimated=bool(stream_usage.get("estimated", False)),
+                            model=get_settings().llm_model, session_id=body.session_id,
+                        )
                     if stream_usage:
                         record_token_usage_bg(
                             auth.tenant_id, prompt_tokens=stream_usage.get("prompt_tokens", 0),
