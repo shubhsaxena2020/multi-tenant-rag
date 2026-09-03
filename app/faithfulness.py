@@ -56,6 +56,7 @@ def _detect_negation_contradiction(answer: str, context: str) -> bool:
     """Check if the answer contains negation that contradicts the context.
 
     Detects patterns like "X is NOT in Y" when context says "X is in Y", or any answer token with 'not'/'n't' that negates a claim present in context.
+    Also detects "did not [verb]" patterns where the context affirms the same verb (e.g., "did not sink" vs "sank").
     """
     ans_lower = answer.lower()
     ctx_lower = context.lower()
@@ -68,6 +69,26 @@ def _detect_negation_contradiction(answer: str, context: str) -> bool:
         # If the negated term appears in context, it's a contradiction
         if term_clean and term_clean in ctx_lower:
             return True
+
+    # NEW: Detect "did not [verb]" / "didn't [verb]" patterns where
+        # the context affirms the same verb (e.g., "did not sink" vs "sank")
+        import re as re_mod
+        neg_verb_patterns = re_mod.findall(r"did\s+not\s+([a-z0-9]+)|didn't\s+([a-z0-9]+)", ans_lower)
+        for match in neg_verb_patterns:
+            neg_verb = match[0] if match[0] else match[1]
+            neg_verb_lower = neg_verb.lower()
+            # Check if the same verb appears positively in context
+            # Handle both base form and various past tense forms
+            verb_variants = [
+                neg_verb_lower,                       # sink
+                neg_verb_lower + "ed",                 # sunk/sinked (irregular/regular past)
+                neg_verb_lower + "s",                  # sinks (3rd person)
+                "sank",                                # sank (common past of sink)
+                neg_verb_lower + "t",                  # tent (rare, skip)
+            ]
+            for verb_var in verb_variants:
+                if verb_var in ctx_lower:
+                    return True
 
     # Check for "is not", "are not", "was not", "were not", "aint" patterns
     contradiction_patterns = ["is not", "are not", "was not", "were not", "aint"]
@@ -87,11 +108,13 @@ def _has_entity_substitution(answer: str, context: str) -> bool:
     tokens include domain-specific nouns that represent a core entity shift, the
     grounding is unreliable.
 
-    We only flag this when:
+    We only flag this when ALL of the following hold:
     1. More than 30% of answer tokens are absent from context, AND
-    2. The absent tokens contain at least one noun-like token (no pure stopwords),
-       AND
-    3. The overlap-to-absent ratio indicates the answer is making different core claims
+    2. The absent tokens include at least one substantive noun (not a stopword,
+       functional word, or short adjective - typically 3+ chars, alphabetic, and
+       not a common question word like when/why/how), AND
+    3. At least half the answer tokens are absent with some overlap present,
+       indicating the answer is making different core claims about entities
     """
     ans_tokens = set(_tokens(answer))
     ctx_tokens = set(_tokens(context))
@@ -106,17 +129,27 @@ def _has_entity_substitution(answer: str, context: str) -> bool:
     if len(absent_tokens) / len(ans_tokens) <= 0.3:
         return False
 
-    # Check if absent tokens include domain-specific nouns (not just stopwords)
-    # A token is "domain-specific" if it's not a common word and appears in the answer
-    # but not in context. We check for tokens that are reasonably long and alphanumeric.
-    domain_absent = {t for t in absent_tokens if len(t) > 2 and t.isalpha()}
+    # Functional/question words that should NOT trigger entity substitution
+    # even when absent from context: when, how, why, did, do, does, is, are, etc.
+    functional_words = {
+        "when", "how", "why", "did", "do", "does", "did", "is", "are", "was", "were",
+        "has", "have", "had", "will", "would", "should", "could", "may", "might",
+        "the", "a", "an", "and", "or", "but", "so", "if", "because", "than",
+        "not", "no", "none", "some", "any", "each", "every", "both", "all",
+        "other", "such", "only", "own", "same", "so", "too", "very",
+    }
+    # Substantive absent tokens: alphabetic, 3+ chars, NOT a functional word
+    domain_absent = {
+        t for t in absent_tokens
+        if len(t) >= 3 and t.isalpha() and t not in functional_words
+    }
 
     if not domain_absent:
-        # No domain-specific absent tokens, so this is just missing adjectives/etc — not an entity substitution
+        # All absent tokens are just functional words — not an entity substitution
         return False
 
-    # If at least half the answer tokens are absent and there's domain-specific absence,
-    # it's a major grounding gap (use >= to catch the boundary case)
+    # If at least half the answer tokens are domain-specific absent and there's overlap,
+    # it's a major grounding gap
     if len(domain_absent) / len(ans_tokens) >= 0.5 and len(overlap_tokens) > 0:
         return True
 
