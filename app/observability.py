@@ -43,6 +43,18 @@ INGEST_JOBS = Counter(
     "rag_ingest_jobs_total", "Ingestion jobs by outcome", ["status"]
 )
 
+# v9-5: Job queue backend and status metrics for multi-replica safety
+RAG_JOB_QUEUE_BACKEND = Gauge(
+    "rag_job_queue_backend",
+    "Current job queue backend mode",
+    ["backend"],
+)
+RAG_JOB_STATUS_TOTAL = Counter(
+    "rag_job_status_total",
+    "Total jobs by status across all tenants",
+    ["status"],
+)
+
 # Sitemap crawl latency — monitor-001
 SITEMAP_CRAWL_LATENCY = Histogram(
     "rag_sitemap_crawl_duration_seconds",
@@ -302,6 +314,10 @@ class MetricsMiddleware:
             REQUEST_LATENCY.labels(method=method, path=label_path).observe(time.perf_counter() - start)
             # v9-5: feed SLO availability + latency tracking
             record_slo(method, label_path, status, time.perf_counter() - start)
+            # Record no-response metric: queries that returned no response / timed out
+            # This feeds the RAGNoResponseRate alert (rag_no_response_total / rag_requests_total > 0.15)
+            if status >= 500:
+                RESPONSE_TOTAL.inc()
             # Reset context variables
             tenant_id_var.reset(tenant_id_token)
             trace_id_var.reset(trace_id_token)
