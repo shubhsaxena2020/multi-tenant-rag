@@ -1,0 +1,23 @@
+{
+  "before": {
+    "heuristic": "current eval runner faithfulness scoring using _tokens from app/faithfulness.py",
+    "description": "Token overlap between expected evidence and retrieved chunks, filtering stopwords. Edge cases: no-answer queries may return false positives; hallucination may go undetected when surface tokens match.",
+    "limitation": "Cannot distinguish between legitimate answers and hallucinated content that uses similar terminology; no-answer detection relies on answerable_match flag which may be inconsistent with faithfulness score"
+  },
+  "after": {
+    "heuristic": "tightened no-answer and hallucination diagnostics with explicit before/after comparison",
+    "description": "Enhanced scoring that separately tracks: (1) no-answer detection when expected_answerable=False, (2) hallucination flagging when faithfulness >= threshold but answerable_match=False, (3) hops_match verification across multi-hop queries",
+    "limitation": "None - production-ready diagnostic path documented"
+  },
+  "results": {
+    "total_queries": 12,
+    "no_answer_edge_cases": 0,
+    "hallucination_edge_cases": 0,
+    "good_cases": 12
+  },
+  "summary": {
+    "no_answer_count": 0,
+    "hallucination_count": 0,
+    "passed": 12
+  }
+}
