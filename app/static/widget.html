@@ -407,9 +407,22 @@ document.getElementById("form").onsubmit = async function (ev) {
     // If the error is a generic type name, use error_type for better diagnostics
     if (msg === "HTTPException" || msg === "RagError" || msg === "ValidationError") {
       var errType = data.error_type || "Error";
+      // Show error_type first for maximum diagnostic value
       bot.textContent = "Error: " + errType + " — " + msg;
+    } else if (data.error_type) {
+      // Show specific error type with detail when available
+      bot.textContent = "Error: " + data.error_type + " — " + msg;
     } else {
       bot.textContent = "Error: " + msg;
+    }
+    // Prominently display error_type when available — operators can grep/ filter on it
+    if (data.error_type) {
+      var errTypeTag = document.createElement('div');
+      errTypeTag.style.marginTop = '4px';
+      errTypeTag.style.fontSize = '0.85em';
+      errTypeTag.style.color = '#666';
+      errTypeTag.textContent = "Type: " + data.error_type;
+      bot.appendChild(errTypeTag);
     }
     return;
   }
