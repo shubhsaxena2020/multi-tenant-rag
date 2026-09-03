@@ -415,6 +415,33 @@
             }
           }
         }
+      },
+      {
+        "id": 14,
+        "title": "Operator Evidence Metrics",
+        "type": "stat",
+        "gridPos": {
+          "h": 6,
+          "w": 8,
+          "x": 0,
+          "y": 54
+        },
+        "targets": [
+          {
+            "expr": "sum(rate(rag_operator_evidence_total[5m]))",
+            "legendFormat": "operator_evidence_rate",
+            "type": 0
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "custom": {
+              "drawStyle": "line",
+              "lineWidth": 2
+            }
+          }
+        }
       }
     ]
   },
