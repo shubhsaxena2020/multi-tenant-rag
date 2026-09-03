@@ -1,0 +1,42 @@
+{
+  "before": {
+    "negation_not_sink": {
+      "question": "The Titanic did NOT sink in 1912",
+      "context": "The Titanic sank in 1912",
+      "_detect_negation_contradiction": true,
+      "score_faithfulness": {
+        "score": 0.0,
+        "answerable": false
+      }
+    },
+    "negation_not_sink2": {
+      "question": "The Titanic did not sink in 1912",
+      "context": "The Titanic sank in 1912",
+      "_detect_negation_contradiction": true,
+      "score_faithfulness": {
+        "score": 0.0,
+        "answerable": false
+      }
+    }
+  },
+  "after": {
+    "negation_not_sink": {
+      "question": "The Titanic did NOT sink in 1912",
+      "context": "The Titanic sank in 1912",
+      "_detect_negation_contradiction": true,
+      "score_faithfulness": {
+        "score": 0.0,
+        "answerable": false
+      }
+    },
+    "negation_not_sink2": {
+      "question": "The Titanic did not sink in 1912",
+      "context": "The Titanic sank in 1912",
+      "_detect_negation_contradiction": true,
+      "score_faithfulness": {
+        "score": 0.0,
+        "answerable": false
+      }
+    }
+  }
+}
