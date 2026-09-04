@@ -19,8 +19,8 @@ class Test_EstimateTokens:
         assert _estimate_tokens("a") == 1
 
     def test_multiple_chars(self):
-        # 4 chars/token is the approximation; 7 chars -> 1 token (ceil)
-        assert _estimate_tokens("abcdefg") == 2  # 7//4 = 1, but max(1, ...) = 1... let's check
+        # 7 chars // 4 = 1, max(1, 1) = 1
+        assert _estimate_tokens("abcdefg") == 1
 
     def test_exact_multiple(self):
         assert _estimate_tokens("abcdefgh") == 2  # 8//4 = 2
