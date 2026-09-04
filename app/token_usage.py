@@ -144,7 +144,12 @@ async def get_token_usage(tenant_id: str, *, days: int = 30) -> dict:
 
 
 async def get_fleet_token_usage(*, days: int = 30) -> dict:
-    """Fleet-wide rollup across all tenants (for the summary/analytics endpoint #15)."""
+    """Fleet-wide rollup across all tenants (for the summary/analytics endpoint #15).
+
+    Returns token usage aggregated over the window. Note: tenant_count reflects
+    tenants who have token usage records, not the total fleet tenant count - that
+    information is available from /admin/summary's top-level tenant_count.
+    """
     s = get_settings()
     prompt_price, completion_price = _price_per_1k(s)
     session_maker = get_session_maker()
@@ -156,7 +161,7 @@ async def get_fleet_token_usage(*, days: int = 30) -> dict:
             SELECT COALESCE(SUM(prompt_tokens),0), COALESCE(SUM(completion_tokens),0),
                    COALESCE(SUM(total_tokens),0), COUNT(*), COUNT(DISTINCT tenant_id)
             FROM token_usage WHERE ts >= :start
-        """), {"start": start})).fetchone() or (0, 0, 0, 0, 0)
+        """"), {"start": start})).fetchone() or (0, 0, 0, 0, 0)
     prompt_t, completion_t, total_t, calls, tenants = (int(row[0]), int(row[1]), int(row[2]), int(row[3]), int(row[4]))
     est_cost = (prompt_t / 1000.0) * prompt_price + (completion_t / 1000.0) * completion_price
     return {

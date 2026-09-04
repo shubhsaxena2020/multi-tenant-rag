@@ -11,7 +11,6 @@ unavailable or errors, we fall back to the deterministic score so the path never
 """
 
 from __future__ import annotations
-
 import re
 from typing import Iterable
 
@@ -20,61 +19,23 @@ _STOPWORDS = {
     "was", "were", "be", "been", "being", "it", "this", "that", "these", "those", "as", "at",
     "by", "from", "we", "you", "they", "he", "she", "i", "our", "your", "their", "its", "can",
     "could", "should", "would", "will", "may", "might", "do", "does", "did", "has", "have",
-    "had", "not", "no", "yes", "if", "then", "than", "so", "there", "here", "about", "into",
+    "had", "yes", "if", "then", "than", "so", "there", "here", "about", "into",
     "over", "under", "between", "both", "each", "more", "most", "other", "some", "such", "only",
+    "sorry",
 }
 
-# Functional/question words and common verb forms that should NOT trigger entity substitution
-# even when absent from context. These are typically short function words or common verbs
-# that appear in many contexts regardless of the specific topic.
-FUNCTIONAL_WORDS_AND_VERBS = {
-    "when", "how", "why", "did", "do", "does", "is", "are", "was", "were",
-    "has", "have", "had", "will", "would", "should", "could", "may", "might",
-    "the", "a", "an", "and", "or", "but", "so", "if", "because", "than",
-    "not", "no", "none", "some", "any", "each", "every", "both", "all",
-    "other", "such", "only", "own", "same", "so", "too", "very",
-    # Common verb forms that are functional, not domain-specific
-    "sits", "sit", "sat", "setting", "sitdown", "situp",
-    "runs", "run", "running", "ran",
-    "eats", "eat", "ate", "eaten",
-    "drinks", "drink", "drank", "drunk",
-    "goes", "go", "went", "gone",
-    "says", "say", "said",
-    "asks", "ask", "asked",
-    "gets", "get", "got",
-    "makes", "make", "made",
-    "puts", "put", "put",
-    "takes", "take", "took",
-    "gives", "give", "gave",
-    "finds", "find", "found",
-    "uses", "use", "used",
-    "starts", "start", "started",
-    "stops", "stop", "stopped",
-    "creates", "create", "created",
-    "includes", "include", "included",
-    "covers", "cover", "covered",
-    "mentions", "mention", "mentioned",
-    "notes", "note", "noted",
-    "points", "point", "pointed",
-    "wants", "want", "wanted",
-    "needs", "need", "needed",
-    "comes", "come", "came",
-    "leaves", "leave", "left",
-    "moves", "move", "moved",
-    "plays", "play", "played",
-    "rides", "ride", "ridden",
-    "sees", "see", "seen",
-    "seeks", "seek", "sought",
-    "shows", "show", "shown",
-    "states", "state", "stated",
-    "tells", "tell", "told",
-    "thinks", "think", "thought",
-    "understands", "understand", "understood",
-}
+
+def _normalize_token(t: str) -> str:
+    """Strip possessive 's and standardize common contractions for token overlap."""
+    # Strip trailing possessive 's (e.g., "dog's" -> "dog")
+    if t.endswith("'s"):
+        t = t[:-2]
+    return t
 
 
 def _tokens(text: str) -> list[str]:
-    return [t for t in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower()) if t not in _STOPWORDS and len(t) > 1]
+    raw_tokens = [t for t in re.findall(r"[a-z0-9][a-z0-9'-]*", text.lower()) if t not in _STOPWORDS and len(t) > 1]
+    return [_normalize_token(t) for t in raw_tokens]
 
 
 def is_refusal(answer: str | None) -> bool:
@@ -82,14 +43,14 @@ def is_refusal(answer: str | None) -> bool:
     if not answer:
         return True
     low = answer.lower()
+    # Normalize: strip apostrophes from contractions like "don't" -> "dont"
+    norm = low.replace("'", "")
     markers = (
-        "i don't know", "i do not know", "i cannot", "i can't", "i can’t",
-        "no information", "don't have information", "do not have information",
-        "i'm sorry", "i am sorry", "unable to", "can't help", "cannot help",
+        "i dont know", "i do not know", "i cannot", "i cant",
+        "no information", "dont have information", "do not have information",
+        "imsorry", "isorry", "unable to", "cant help", "cannot help",
+        "sorry",
     )
-<<<<<<< Updated upstream
-    return any(m in low for m in markers)
-=======
     return any(m in norm for m in markers)
 
 
@@ -145,25 +106,13 @@ def _detect_negation_contradiction(answer: str, context: str) -> bool:
                 return True
 
     # Also check for "isn't", "aren't", "wasn't", "weren't" contractions
-    # Properly expand contractions: isn't -> is not, aren't -> are not, etc.
-    # Then check if the negated claim appears in context
-    contraction_expansions = {
-        "isn't": "is not",
-        "is not": "is not",
-        "aren't": "are not",
-        "are not": "are not",
-        "wasn't": "was not",
-        "was not": "was not",
-        "weren't": "were not",
-        "were not": "were not",
-    }
-    for contraction, expansion in contraction_expansions.items():
-        # Check if the contraction or its expansion is in the answer
-        if contraction in ans_lower or expansion in ans_lower:
-            # Find the claim after "not" in the expanded form
-            if " not" in expansion:
-                after_not = ans_lower.split(" not", 1)[1] if " not" in ans_lower else ""
-                claim_words = after_not.strip().split()[:3]
+    for contraction in ["isn't", "is not", "aren't", "are not", "wasn't", "was not", "weren't", "were not"]:
+        if contraction.replace("n't", " is") in ans_lower or contraction in ans_lower:
+            # Extract claim after contraction
+            clean = contraction.replace("n't", " is")
+            if clean in ans_lower:
+                after = ans_lower.split(clean, 1)[1]
+                claim_words = after.strip().split()[:3]
                 claim = " ".join(claim_words)
                 if claim and claim in ctx_lower:
                     return True
@@ -203,7 +152,13 @@ def _has_entity_substitution(answer: str, context: str) -> bool:
 
     # Functional/question words that should NOT trigger entity substitution
     # even when absent from context: when, how, why, did, do, does, is, are, etc.
-    functional_words = FUNCTIONAL_WORDS_AND_VERBS
+    functional_words = {
+        "when", "how", "why", "did", "do", "does", "did", "is", "are", "was", "were",
+        "has", "have", "had", "will", "would", "should", "could", "may", "might",
+        "the", "a", "an", "and", "or", "but", "so", "if", "because", "than",
+        "not", "no", "none", "some", "any", "each", "every", "both", "all",
+        "other", "such", "only", "own", "same", "so", "too", "very",
+    }
     # Substantive absent tokens: alphabetic, 3+ chars, NOT a functional word
     domain_absent = {
         t for t in absent_tokens
@@ -220,7 +175,6 @@ def _has_entity_substitution(answer: str, context: str) -> bool:
         return True
 
     return False
->>>>>>> Stashed changes
 
 
 def token_overlap(answer: str, context: str) -> float:
@@ -253,7 +207,7 @@ def _llm_self_check(answer: str, context: str) -> float | None:
                 "model": s.llm_model,
                 "messages": [{"role": "user", "content": (
                     "Answer strictly grounded? Reply with only 'yes' or 'no'.\n"
-                    f"CONTEXT:\n{context[:2000]}\n\nANSWER:\n{answer[:1000]}"
+                    f"CONTEXT:{context[:2000]}\n\nANSWER:{answer[:1000]}"
                 )}],
                 "temperature": 0.0,
             },
@@ -281,6 +235,15 @@ def score_faithfulness(
     - Empty / refusal answer -> (0.0, False).
     - Otherwise a deterministic token-overlap score, optionally nudged by an LLM self-check when
       configured (and only when the LLM strongly disagrees). Never raises.
+    - When token overlap score is 0.0 (zero grounding), answer is not answerable
+      since it has no support in the retrieved context.
+    - Tightened heuristic: if the answer contains tokens not present in the retrieved context
+      (beyond stopword-level overlap), the faithfulness score is proportionally reduced so that
+      answers whose content is mostly unsupported by context receive a lower faithfulness score
+      and are less likely to be marked answerable.
+    - Contradiction hardening: if the answer contains claims that fundamentally contradict
+      the retrieved context (e.g., entity substitutions, factual inversions), the score is
+      zeroed and the answer is marked unanswerable, since the grounding is unreliable.
     """
     if is_refusal(answer):
         return 0.0, False
@@ -294,4 +257,33 @@ def score_faithfulness(
                 score = min(score, 0.4)  # LLM says ungrounded; cap the optimistic overlap score
             elif llm == 1.0 and score < 0.5:
                 score = max(score, 0.6)
+    # Tightened heuristic: zero token overlap means zero grounding -> not answerable
+    if score == 0.0:
+        return 0.0, False
+    # NEW: penalize score when answer has tokens absent from context.
+    # This prevents answers with high surface-overlap but wrong factual claims
+    # from receiving a deceptively high faithfulness score.
+    ans_tokens = _tokens(answer or "")
+    ctx_tokens = set(_tokens(context))
+    if ans_tokens:
+        absent_tokens = [t for t in ans_tokens if t not in ctx_tokens]
+        absence_ratio = len(absent_tokens) / len(ans_tokens)
+        if absence_ratio > 0.3 and score > 0.3:
+            # More than 30% of answer tokens are absent from context, and we had
+            # non-trivial overlap — cap the score to reflect the grounding gap.
+            score = score * (1 - absence_ratio * 0.6)
+    # Contradiction hardening: if answer has entity substitutions or fundamental
+    # factual contradictions relative to context, zero the score.
+    context_str = " ".join(context_chunks) if context_chunks else ""
+    if _has_entity_substitution(answer or "", context_str):
+        return 0.0, False
+    # Tightened answerability: if majority of answer tokens are absent from context,
+    # the answer is not reliably answerable even if some tokens overlap.
+    if score > 0:
+        absent_count = len([t for t in _tokens(answer or "") if t not in ctx_tokens])
+        total_answer_tokens = len(_tokens(answer or ""))
+        if total_answer_tokens > 0 and absent_count / total_answer_tokens > 0.5:
+            return 0.0, False
+    if _detect_negation_contradiction(answer or "", context):
+        return 0.0, False
     return float(score), True

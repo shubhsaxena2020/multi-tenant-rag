@@ -59,6 +59,13 @@ Config via env (see `.env.example`): `QDRANT_URL`, `DB_URL`, `ADMIN_API_KEY`,
 `EMBED_BASE_URL` (TEI), `RERANK_MODEL`, `TENANT_CHUNK_QUOTA`,
 `RATE_*_PER_MIN`, `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` (optional answer generation).
 
+# Admin key setup
+# Set `ADMIN_API_KEY=***` in `.env` before first start.
+# The `Admin-Key` header (e.g. `Admin-Key: admin_master_key`) is required for
+# tenant create, key rotation, and all other admin routes. Without it, those
+# routes return 403 "Admin key required". Admin audit endpoints (`/audit`,
+# `/audit/verify`) also fail-closed without the Admin-Key.
+
 Health: `GET /health`, `GET /health/ready`. Metrics: `GET /metrics` (Prometheus).
 Interactive contract: `GET /api/v1/docs` (Swagger). Schema: `GET /api/v1/openapi.json`.
 Admin audit trail: `GET /audit` (read, hash-chained) + `GET /audit/verify` (chain-integrity

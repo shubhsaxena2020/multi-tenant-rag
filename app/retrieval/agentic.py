@@ -89,17 +89,22 @@ def retrieve_multi_hop(
             # Resilience: stop on backend failure, keep what we have.
             break
         if not hits:
-            break
-        for h in hits:
-            cid = h.get("chunk_id") or h.get("doc_id")
-            if cid and cid not in seen:
-                seen[cid] = h
-        # Reformulate for the next hop using the best chunk's text.
-        best = max(hits, key=lambda h: h.get("rerank_score", h.get("score", 0.0)))
-        current_q = _reformulate(question, best.get("text", ""))
-        # Stop early if we already have enough grounding (single strong result, no new signal).
-        if effective_hops == 1:
-            break
+            # Only break on empty results if we're in single-hop mode.
+            # For multi-hop, continue to next hop (no new results added, but
+            # the hop still counts toward the effective_hops limit).
+            if effective_hops <= 1:
+                break
+        else:
+            for h in hits:
+                cid = h.get("chunk_id") or h.get("doc_id")
+                if cid and cid not in seen:
+                    seen[cid] = h
+            # Reformulate for the next hop using the best chunk's text.
+            best = max(hits, key=lambda h: h.get("rerank_score", h.get("score", 0.0)))
+            current_q = _reformulate(question, best.get("text", ""))
+            # Stop early if we already have enough grounding (single strong result, no new signal).
+            if effective_hops == 1:
+                break
 
     merged = sorted(seen.values(), key=lambda h: h.get("rerank_score", h.get("score", 0.0)), reverse=True)
     return merged, hop_count
