@@ -42,6 +42,11 @@ pytest tests/ -x --timeout=120  [at least 228/235 must pass]
 
 ## 5. Rollback
 
+## 8. Release-Evidence Automation
+
+- [ ] Wire one manual release-evidence step (smoke output, dashboard snapshot, migration proof) into a script. Done when: `scripts/release_evidence.sh` produces the artifact in one command.
+- [ ] Add the release-evidence step to the RELEASE-CHECKLIST. Done when: the checklist references the script and an operator can follow it without tribal knowledge.
+
 - [ ] Tag present in git: `git tag --contains <tag>` confirms release milestone
 - [ ] Previous tag accessible for `git checkout <old_tag> && make restart` or docker-compose down/up
 - [ ] Backup of `rag_tenants.db` and `qdrant_storage` before upgrade
