@@ -62,6 +62,7 @@ async def requeue_orphaned_jobs(session: AsyncSession | None = None) -> int:
     stuck forever. On startup we reset orphaned `running` jobs back to `pending` so a
     worker can pick them up. Additionally, failed jobs are reset to `pending` so they can
     be retried. Returns the number of recovered jobs.
+    """
 
     NOTE: the jobs table is already the durable source of truth (SQLite/Postgres). For
     horizontal scale with N workers, front this with an at-least-once queue (Cloud Tasks /
