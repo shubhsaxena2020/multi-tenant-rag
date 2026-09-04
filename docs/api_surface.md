@@ -31,6 +31,14 @@ Generated from the running app's OpenAPI spec (`openapi.json`). This table lists
 | GET | /api/v1/{tenant}/usage | Tenant Usage | Authorization header | path: `tenant` (string), query: `days` (integer, default 30), header: `authorization` | `application/json` object (additionalProperties), 422: `HTTPValidationError` |
 | POST | /api/v1/{tenant}/feedback | Post Feedback | Authorization header | path: `tenant` (string), header: `authorization`, body: `application/json` (FeedbackIn) | 200: `application/json` object (additionalProperties), 422: `HTTPValidationError` |
 | POST | /api/v1/{tenant}/handoff | Post Handoff | Authorization header | path: `tenant` (string), header: `authorization`, body: `application/json` (HandoffIn) | 200: `application/json` object (additionalProperties), 422: `HTTPValidationError` |
+| POST | /api/v1/{tenant}/keys | Rotate Api Key | Authorization | — | `TenantOut` |
+| GET | /api/v1/{tenant}/keys | List Keys | Authorization | — | `#/components/schemas/TenantKeysOut` |
+| POST | /api/v1/{tenant}/keys/publishable | Create Publishable Key | Authorization | body: `application/json` (PublishableKeyRequest) | `TenantOut` |
+| POST | /api/v1/{tenant}/keys/secret | Create Secret Key | Authorization | body: `application/json` (SecretKeyRequest) | `TenantOut` |
+| DELETE | /api/v1/{tenant}/keys/{prefix} | Revoke Key | Authorization | — | `{dict with revoked count}` |
+| PATCH | /api/v1/{tenant}/keys/{prefix}/expiry | Set Key Expiry | Authorization | body: `application/json` (KeyExpiryRequest) | `{dict with prefix, expires_at, updated}` |
+| GET | /api/v1/{tenant}/branding | Update Branding | Admin-Key or Authorization | path: `tenant` (string), header: `Admin-Key`, header: `authorization` | body: `application/json` (TenantBranding), 200: `TenantOut`, 422: `HTTPValidationError` |
+| POST | /api/v1/{tenant}/query/stream | Query Stream | Authorization | path: `tenant` (string), header: `authorization`, body: `application/json` (QueryRequest) | SSE stream: `sources`, `token`, `done`, `error` events |
 
 ## Auth Convention
 
