@@ -302,6 +302,15 @@ v1 = FastAPI(
 )
 
 
+def VERSION1_ROUTE(path, *, response_model=None, status_code=None, **kwargs):
+    """Route decorator for /api/v1/* endpoints on the v1 sub-app.
+
+    The v1 app has root_path="/api/v1", so routes defined on v1
+    automatically get the versioned prefix.
+    """
+    return v1.get(path, response_model=response_model, status_code=status_code, **kwargs)
+
+
 TenantDep = Annotated[tenants.TenantRow, Depends(get_tenant_from_header)]
 
 
@@ -759,7 +768,7 @@ async def admin_release_incidents(_: None = Depends(require_admin)):
     from .observability import RELEASE_INCIDENTS, _metric_value
 
     # Known outcome labels that can be recorded via record_release_incident(outcome=...)
-    known_outcomes = ["ingestion_completed", "eval_failed", "success"]
+    known_outcomes = ["ingestion_completed", "eval_failed", "success", "orphaned"]
     outcomes = {}
     for outcome in known_outcomes:
         outcomes[outcome] = _metric_value(RELEASE_INCIDENTS.labels(outcome=outcome))
@@ -1034,7 +1043,11 @@ async def get_document(tenant: str, doc_id: str, auth: TenantDep, request: Reque
 async def delete_doc(tenant: str, doc_id: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     rate_limit(request, auth.tenant_id)
     # Issue #15 fail-closed: path tenant must match the API-key-resolved tenant.
-    if tenant != auth.tenant_id:
+    # Resolve the path tenant — support both tenant names and tenant IDs.
+    path_tenant = await tenants.get_tenant_by_name(tenant)
+    if path_tenant is None:
+        path_tenant = await tenants.get_tenant(tenant)
+    if path_tenant is None or path_tenant.name != auth.name or path_tenant.tenant_id != auth.tenant_id:
         raise HTTPException(status_code=404, detail="not found")
     # Drop the Qdrant vectors first (tenant-scoped), then remove the catalog/registry row so
     # the document disappears from GET /documents immediately (issue #12 accuracy fix).

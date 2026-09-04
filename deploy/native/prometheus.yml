@@ -24,7 +24,7 @@ scrape_configs:
   - job_name: rag-app
     metrics_path: /metrics
     static_configs:
-      - targets: ["localhost:8007"]
+      - targets: ["localhost:8000"]
         labels:
           service: rag-app
 

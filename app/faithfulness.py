@@ -72,31 +72,50 @@ def _detect_negation_contradiction(answer: str, context: str) -> bool:
         if term_clean and term_clean in ctx_lower:
             return True
 
-    # NEW: Detect "did not [verb]" / "didn't [verb]" patterns where
-        # the context affirms the same verb (e.g., "did not sink" vs "sank")
-        import re as re_mod
-        neg_verb_patterns = re_mod.findall(r"did\s+not\s+([a-z0-9]+)|didn't\s+([a-z0-9]+)", ans_lower)
-        for match in neg_verb_patterns:
-            neg_verb = match[0] if match[0] else match[1]
-            neg_verb_lower = neg_verb.lower()
-            # Check if the same verb appears positively in context
-            # Handle both base form and various past tense forms
-            verb_variants = [
-                neg_verb_lower,                       # sink
-                neg_verb_lower + "ed",                 # sunk/sinked (irregular/regular past)
-                neg_verb_lower + "s",                  # sinks (3rd person)
-                "sank",                                # sank (common past of sink)
-                neg_verb_lower + "t",                  # tent (rare, skip)
-            ]
-            for verb_var in verb_variants:
-                if verb_var in ctx_lower:
-                    return True
+    # Detect "did not [verb]" / "didn't [verb]" patterns where
+    # the context affirms the same verb (e.g., "did not sink" vs "sank")
+    neg_verb_patterns = re.findall(r"did\s+not\s+([a-z0-9]+)|didn't\s+([a-z0-9]+)", ans_lower)
+    for match in neg_verb_patterns:
+        neg_verb = match[0] if match[0] else match[1]
+        neg_verb_lower = neg_verb.lower()
+        # Check if the same verb appears positively in context
+        # Handle both base form and various past tense forms
+        # Include common irregular past forms
+        verb_variants = [
+            neg_verb_lower,                       # base form (sit)
+            neg_verb_lower + "ed",                 # regular past (sited - rare)
+            "sat",                                 # irregular past of sit
+            neg_verb_lower + "s",                  # sinks (3rd person)
+            "sank",                                # sank (common past of sink)
+        ]
+        for verb_var in verb_variants:
+            if verb_var in ctx_lower:
+                return True
 
-    # Check for "is not", "are not", "was not", "were not", "aint" patterns
-    contradiction_patterns = ["is not", "are not", "was not", "were not", "aint"]
-    for pattern in contradiction_patterns:
-        if pattern in ans_lower and pattern.replace("not", "").strip() in ctx_lower:
-            return True
+    # Check for "is not", "are not", "was not", "were not" patterns
+    # where the negated phrase's subject/claim appears in context
+    for pattern in ["is not", "are not", "was not", "were not"]:
+        # Extract the phrase after "not" and check if it appears in context
+        if pattern in ans_lower:
+            # Get text after the pattern
+            after_not = ans_lower.split(pattern, 1)[1]
+            # Take the first word/phrase after "not" as the negated claim
+            claim_words = after_not.strip().split()[:3]
+            claim = " ".join(claim_words)
+            if claim and claim in ctx_lower:
+                return True
+
+    # Also check for "isn't", "aren't", "wasn't", "weren't" contractions
+    for contraction in ["isn't", "is not", "aren't", "are not", "wasn't", "was not", "weren't", "were not"]:
+        if contraction.replace("n't", " is") in ans_lower or contraction in ans_lower:
+            # Extract claim after contraction
+            clean = contraction.replace("n't", " is")
+            if clean in ans_lower:
+                after = ans_lower.split(clean, 1)[1]
+                claim_words = after.strip().split()[:3]
+                claim = " ".join(claim_words)
+                if claim and claim in ctx_lower:
+                    return True
 
     return False
 

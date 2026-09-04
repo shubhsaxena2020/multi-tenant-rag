@@ -70,5 +70,20 @@ Each runbook provides copy-paste commands verified against the real codebase. Al
 
 ---
 
+## Current Behavior vs Planned Behavior
+
+| Feature | Current Behavior (v10.8) | Planned Behavior (future Phase) |
+|---|---|---|
+| Key expiry enforcement | Keys with past `expires_at` rejected as 401; keys with future `expires_at` still valid | Full key rotation lifecycle: auto-expire, auto-revoke, email notification to tenant admin, grace period before key becomes read-only |
+| Publishable key scope | `pk_*` keys cannot rotate/revoke other keys (403); read-only by design | Publishable keys will gain scoped capabilities per plan tier (standard/pro/enterprise) with fine-grained route permissions |
+| Key rotation frequency | Manual via admin API; no automated rotation | Scheduled key rotation (configurable interval) with zero-downtime handover; old key remains valid until new key propagates |
+| Multi-hop retrieval | Standard tenants clamped to 1 hop; enterprise allows >1 hop | Plan-gated ceilings will be uniformly enforced at API boundary via `app/plans.py:capabilities_for()` with 402 responses for over-quota requests |
+
+**Source**: Plan capabilities defined in `app/plans.py:28-38`; multi-hop gate in `app/retrieval/agentic.py:11,27`; route enforcement in `app/main.py:1367-1384` and `app/auth.py:26` (key-tier derivation). Verified against live service and test suite.
+
+---",
+
+---
+
 **Last updated**: 2026-09-04 against codebase HEAD `57a3cfd` on `feat/rag-agent6-month-scale`
 **Total failure modes covered**: 10 (the 8 most common + 2 bonus from adjacent items)

@@ -58,7 +58,8 @@ def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict
     - "redis": uses RQ-style wrapper with Redis for multi-replica safety
     - "rq" / "celery": external queue backend integration points
     """
-    if _is_redis_backend() and _job_queue_connection:
+    redis_url = _job_queue_connection or os.getenv("REDIS_URL", "") or _settings.redis_url
+    if _is_redis_backend() and redis_url:
         _submit_redis(job_id, tenant_id, kind, payload, metadata)
     else:
         _executor = _ensure_executor()

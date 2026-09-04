@@ -173,3 +173,18 @@ for job in data:
 ---
 
 **Last verified**: 2026-09-04 against codebase HEAD `e6d5229` on `feat/rag-agent6-month-scale`
+
+---
+
+## Current Behavior vs Planned Behavior
+
+| Feature | Current Behavior | Planned Behavior (future Phase J) |
+|---|---|---|
+| Job queue backend | `"inline"` default: ThreadPoolExecutor, single-replica only; `"redis"`: RQ-style wrapper with Redis for multi-replica safety; `"rq"/"celery"`: external queue backend integration points | Full distributed job queue with guaranteed delivery, priority queuing, and cross-replica failover; job metrics and DLQ support |
+| Progress tracking | Progress pushes delivered async after DB update via `push_func` callback | Real-time SSE progress streaming with client-controlled update frequency; persistent progress store (Redis) surviving worker restarts |
+| Job failure handling | Failures captured as `failed` status with sanitized error message (no full traceback) | Structured failure codes + root-cause categorization (network, embedding, Qdrant, tenant quota); automatic retry with exponential backoff |
+| Job completion | Job marked `completed` with `result_doc_id` and `INGEST_CHUNKS` incremented | Post-completion hooks: webhook delivery, external system notification, analytics event pipeline |
+
+**Source**: Job queue architecture in `app/ingestion/runner.py:54-101` (submit/_submit_redis/_run); progress mechanism in `runner.py:120-188`; state machine in `app/jobs.py:30-64`. Verified against live service and test suite.
+
+---",
