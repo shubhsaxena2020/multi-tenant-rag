@@ -19,6 +19,7 @@ from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
     Histogram,
+    Gauge,
     generate_latest,
 )
 
@@ -41,8 +42,57 @@ REQUEST_LATENCY = Histogram(
 INGEST_JOBS = Counter(
     "rag_ingest_jobs_total", "Ingestion jobs by outcome", ["status"]
 )
+
+# v9-5: Job queue backend and status metrics for multi-replica safety
+RAG_JOB_QUEUE_BACKEND = Gauge(
+    "rag_job_queue_backend",
+    "Current job queue backend mode",
+    ["backend"],
+)
+RAG_JOB_STATUS_TOTAL = Counter(
+    "rag_job_status_total",
+    "Total jobs by status across all tenants",
+    ["status"],
+)
+
+# Sitemap crawl latency — monitor-001
+SITEMAP_CRAWL_LATENCY = Histogram(
+    "rag_sitemap_crawl_duration_seconds",
+    "Sitemap crawl latency by outcome",
+    ["outcome"],
+    buckets=(0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0),
+)
+
+# Duplicate detection — monitor-002
+DUPLICATE_DETECTIONS = Counter(
+    "rag_duplicate_detections_total",
+    "Total duplicate URLs detected during ingestion",
+    ["tenant_id"],
+)
+
+# Robots rate-limit honoring — monitor-003
+ROBOTS_RATE_LIMIT = Counter(
+    "rag_robots_rate_limit_exceeded_total",
+    "Total robots rate-limit expirations",
+    ["tenant_id"],
+)
+
+# Queue depth gauges — monitor-004
+INGEST_QUEUE_DEPTH = Gauge(
+    "rag_ingest_queue_depth",
+    "Current number of jobs in the ingestion queue",
+    ["backend"],
+)
 INGEST_CHUNKS = Counter(
     "rag_ingest_chunks_total", "Chunks embedded+stored"
+)
+
+# P2: release/ingestion incident visibility — operators can confirm
+# incidents via /metrics; paired with an alert on sustained > 0.
+RELEASE_INCIDENTS = Counter(
+    "rag_release_incidents_total",
+    "Release or ingestion incidents by outcome",
+    ["outcome"],
 )
 RETRIEVAL_LATENCY = Histogram(
     "rag_retrieval_duration_seconds", "Retrieval (vector+rerank) latency",
@@ -61,6 +111,11 @@ FAITHFULNESS_SCORE = Histogram(
 )
 NO_ANSWER_TOTAL = Counter(
     "rag_no_answer_total", "Queries that returned a safe no-answer (unanswerable / out of scope)"
+)
+
+# P1: timeout/no-response rate — distinct from safe no-answer
+RESPONSE_TOTAL = Counter(
+    "rag_no_response_total", "Queries that returned no response / timed out"
 )
 
 # ---------------- v9-5: SLO tracking ----------------
@@ -97,6 +152,11 @@ def record_slo(method: str, path: str, status: int, latency: float) -> None:
     SLO_LATENCY_OBS.observe(latency)
     if status >= 500:
         DEGRADED_RESPONSES.labels(path=path).inc()
+
+
+def record_release_incident(outcome: str = "success") -> None:
+    """Record a release or ingestion incident for operators to confirm via /metrics."""
+    RELEASE_INCIDENTS.labels(outcome=outcome).inc()
 
 
 def _metric_value(sample) -> float:
@@ -254,6 +314,10 @@ class MetricsMiddleware:
             REQUEST_LATENCY.labels(method=method, path=label_path).observe(time.perf_counter() - start)
             # v9-5: feed SLO availability + latency tracking
             record_slo(method, label_path, status, time.perf_counter() - start)
+            # Record no-response metric: queries that returned no response / timed out
+            # This feeds the RAGNoResponseRate alert (rag_no_response_total / rag_requests_total > 0.15)
+            if status >= 500:
+                RESPONSE_TOTAL.inc()
             # Reset context variables
             tenant_id_var.reset(tenant_id_token)
             trace_id_var.reset(trace_id_token)
