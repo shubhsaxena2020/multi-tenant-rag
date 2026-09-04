@@ -43,4 +43,10 @@ lint.select = ["F", "E", "W", "I", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [""]
+markers = [
+    "unit: fast unit tests (no external deps)",
+    "integration: integration tests requiring external services",
+    "slow: slow-running tests",
+    "external: tests requiring external APIs or services",
+]
