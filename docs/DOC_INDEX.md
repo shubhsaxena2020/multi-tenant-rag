@@ -16,6 +16,7 @@ This file catalogs every operator-facing document in the rag-service repo, with 
 | `VERIFICATION-PHASE-A.md` | Phase A independent verification report (CORS + key-tier split) | Fresh (verification ran against live service; held up with no gaps) |
 | `TENANT-PATH-VERIFICATION.md` | Tenant path semantics & key-scope enforcement (fail-closed path tenant matching) | Fresh (verified against `app/main.py` 38-route AST scan) |
 | `AUTH-SCOPE-VERIFICATION.md` | Documented auth/key-scope rules (pk_* vs rk_* vs admin) verified against real 401/403 behavior with example curl for each key type | Fresh (verified against live service: pk_*=403 on ingest/admin, rk_*=200 full power, Admin-Key=200 on admin routes) |
+| `ingest_job_stuck_runbook.md` | Ingestion job stuck / orphaned recovery runbook with copy-paste recovery sequences and code-path references | Fresh (references real `app/ingestion/runner.py` and `app/jobs.py` code paths; verified against live service) |
 | `COMMIT_SUMMARY.md` | Historical commit summary for the active branch | Stale (covers commits up to prior tag; new work since not reflected) |
 | `CHANGELOG.md` | Project changelog — version history | Stale (covers up to v17.04; incremental changes since not yet entered) |
 | `BACKLOG.md` | High-level backlog / project overview | Stale (last refreshed at batch start; new items added since) |
