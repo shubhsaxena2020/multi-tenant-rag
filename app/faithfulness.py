@@ -94,12 +94,15 @@ def score_faithfulness(
     context_chunks: Iterable[str],
     *,
     use_llm: bool = True,
+    threshold: float = 0.3,
 ) -> tuple[float, bool]:
     """Return (faithfulness 0..1, answerable).
 
     - Empty / refusal answer -> (0.0, False).
     - Otherwise a deterministic token-overlap score, optionally nudged by an LLM self-check when
       configured (and only when the LLM strongly disagrees). Never raises.
+    - answerable = score >= threshold: the answer is only considered answerable if the
+      faithfulness score meets or exceeds the confidence threshold.
     """
     if is_refusal(answer):
         return 0.0, False
