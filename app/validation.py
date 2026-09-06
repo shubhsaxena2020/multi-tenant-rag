@@ -19,7 +19,7 @@ def validate_content(content: str) -> None:
     if not content or not content.strip():
         _fail("content must be non-empty")
     if len(content) > MAX_CONTENT_CHARS:
-        _fail(f"content exceeds {MAX_CONTENT_CHARS} char limit")
+        _fail(f"content too large; exceeds {MAX_CONTENT_CHARS} char limit")
 
 
 def validate_metadata(metadata: dict | None) -> dict | None:

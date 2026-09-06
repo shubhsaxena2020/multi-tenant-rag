@@ -5,7 +5,7 @@ fetch, chunking, embedding). Per the core requirement, long-running ingestion mu
 expose status tracking. Jobs move through explicit states:
 
     pending -> running -> completed
-                -> failed
+        -> failed
 
 The API returns a job_id immediately; clients poll GET /{tenant}/jobs/{id}.
 """
@@ -77,9 +77,25 @@ async def delete_job(job_id: str, tenant_id: str) -> bool:
     return await _delete_job(job_id, tenant_id)
 
 
-async def enqueue_job(tenant_id: str, kind: str, title: str | None = None, payload: dict | None = None) -> str:
-    """Enqueue a new ingestion job and return its job_id."""
-    return await _create_job(tenant_id, kind, title or kind)
+def enqueue_job(tenant_id: str, kind: str, title: str | None = None, payload: dict | None = None) -> str:
+    """Synchronously create a job for legacy callers.
+
+    A separate thread is used when called from an active event loop because
+    ``run_until_complete`` cannot be nested in that loop.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    async def _create() -> str:
+        return await _create_job(tenant_id, kind, title or kind)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_create())
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(asyncio.run, _create()).result()
 
 
 async def get_job_status(job_id: str, tenant_id: str) -> dict | None:

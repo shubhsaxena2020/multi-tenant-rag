@@ -24,7 +24,7 @@ dependencies = [
 
 [project.optional-dependencies]
 real = ["sentence-transformers", "trafilatura"]
-test = ["pytest", "httpx", "pytest-timeout", "ruff"]
+test = ["pytest", "pytest-asyncio", "httpx", "pytest-timeout", "ruff"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

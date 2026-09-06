@@ -116,20 +116,15 @@ def reset_limiter(backend: str = "memory"):
     backend: 'memory' forces the in-process limiter; 'auto' selects Redis when
     REDIS_URL is set, else in-memory.
     
-    When backend='memory' and _limiter already exists, preserve the bucket state
-    rather than discarding it. This prevents rate-limit tests from always passing
-    when a new in-memory limiter is created with empty buckets on each reset.
+    A memory reset always starts a fresh bucket set. Test fixtures use this to
+    isolate requests between tests; request-to-request state is retained by the
+    active limiter returned from _get_limiter().
     """
     global _limiter
-    if backend == "memory" and _limiter is not None and isinstance(_limiter, _MemoryLimiter):
-        # Preserve existing bucket state rather than discarding it
-        old_buckets = _limiter._buckets
-        _limiter = _MemoryLimiter()
-        _limiter._buckets = old_buckets
-    elif backend == "memory":
+    if backend == "memory":
         _limiter = _MemoryLimiter()
     else:
-        _limiter = _MemoryLimiter() if backend == "memory" else _build()
+        _limiter = _build()
     return _limiter
 
 
@@ -145,7 +140,10 @@ def _get_limiter() -> object:
     ordering without re-checking every request.
     """
     global _limiter
-    if _limiter is None or (get_settings().redis_url and not isinstance(_limiter, _RedisLimiter)):
+    # Do not rebuild a deliberately selected in-memory limiter on every request.
+    # This matters when Redis is configured but unavailable, and when tests force
+    # the deterministic memory backend via reset_limiter("memory").
+    if _limiter is None:
         _limiter = _build()
     return _limiter
 

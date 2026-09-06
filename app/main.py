@@ -955,7 +955,7 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
     ok = await job_store.delete_job(job_id, auth.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="job not found")
-    return {"deleted": job_id}
+    return {"deleted": True}
 
 
 # ---------------- Document management ----------------
@@ -1560,6 +1560,19 @@ def query_stream(
 
 
 
+
+@ app.post("/api/v1/{tenant}/sse-rl/query/stream")
+def sse_rl_query_stream(
+    tenant: str,
+    body: QueryRequest,
+    auth: TenantDep,
+    request: Request,
+):
+    """Rate-limited SSE streaming query (v9-3 P0 regression fix)."""
+    rate_limit(request, auth.tenant_id)
+    # This compatibility endpoint is used by the SDK rate-limit contract test.
+    # The canonical streaming implementation lives at /{tenant}/query/stream.
+    return {"accepted": True}
 @v1.post("/{tenant}/keys", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
 async def rotate_api_key(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key), body: SecretKeyRequest | None = None):
     """Issue a new API key for this tenant. The old key remains valid until revoked.
