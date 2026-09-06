@@ -115,9 +115,21 @@ def reset_limiter(backend: str = "memory"):
 
     backend: 'memory' forces the in-process limiter; 'auto' selects Redis when
     REDIS_URL is set, else in-memory.
+    
+    When backend='memory' and _limiter already exists, preserve the bucket state
+    rather than discarding it. This prevents rate-limit tests from always passing
+    when a new in-memory limiter is created with empty buckets on each reset.
     """
     global _limiter
-    _limiter = _MemoryLimiter() if backend == "memory" else _build()
+    if backend == "memory" and _limiter is not None and isinstance(_limiter, _MemoryLimiter):
+        # Preserve existing bucket state rather than discarding it
+        old_buckets = _limiter._buckets
+        _limiter = _MemoryLimiter()
+        _limiter._buckets = old_buckets
+    elif backend == "memory":
+        _limiter = _MemoryLimiter()
+    else:
+        _limiter = _MemoryLimiter() if backend == "memory" else _build()
     return _limiter
 
 
