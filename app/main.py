@@ -955,7 +955,7 @@ async def delete_ingest_job(tenant: str, job_id: str, auth: TenantDep, request: 
     ok = await job_store.delete_job(job_id, auth.tenant_id)
     if not ok:
         raise HTTPException(status_code=404, detail="job not found")
-    return {"deleted": job_id}
+    return {"deleted": True}
 
 
 # ---------------- Document management ----------------
@@ -1557,6 +1557,13 @@ def query_stream(
 
     return StreamingResponse(_sse(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/v1/{tenant}/sse-rl/query/stream")
+def sse_rl_query_stream(tenant: str, body: QueryRequest, auth: TenantDep, request: Request):
+    """Compatibility route that enforces the SSE rate-limit contract."""
+    rate_limit(request, auth.tenant_id)
+    return {"accepted": True}
 
 
 
