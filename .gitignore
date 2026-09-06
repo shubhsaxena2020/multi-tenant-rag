@@ -8,6 +8,7 @@ __pycache__/
 
 # Env / secrets
 .env
+.env.fixed
 
 # Qdrant data
 qdrant_storage/
