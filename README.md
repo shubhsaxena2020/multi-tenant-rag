@@ -54,6 +54,10 @@ uv venv && . .venv/bin/activate
 uv pip install -e .
 uvicorn app.main:app --port 8000
 ```
+# Admin key required for admin routes. Set `ADMIN_API_KEY=***` in `.env` before first start.
+# The `Admin-Key` header (e.g. `Admin-Key: admin_master_key`) is needed for tenant create,
+# key rotation, and other admin operations. Without it, those routes return 403.
+# Ensure `docker compose.yml` includes `env_file: - .env` so .env values load into the app container.
 Config via env (see `.env.example`): `QDRANT_URL`, `DB_URL`, `ADMIN_API_KEY`,
 `MASTER_ENCRYPTION_KEY`, `USE_REAL_EMBEDDER`, `USE_REAL_RERANKER`, `EMBED_MODEL`,
 `EMBED_BASE_URL` (TEI), `RERANK_MODEL`, `TENANT_CHUNK_QUOTA`,
