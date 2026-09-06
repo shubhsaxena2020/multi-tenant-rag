@@ -108,7 +108,7 @@ groups:
       # Faithfulness quality regression
       - alert: RAGFaithfulnessLowRate
         expr: |
-          histogram_quantile(0.5, sum(rate(rag_faithfulness_score_bucket[10m])) by (le)) < 0.5
+          histogram_quantile(0.5, sum(rate(rag_faithfulness_bucket[10m])) by (le)) < 0.5
         for: 10m
         labels:
           severity: warn
