@@ -24,3 +24,12 @@ test_rag_tenants.db
 .models/
 *.onnx
 embed_cache/
+
+# build / test / editor artifacts
+.coverage
+coverage.xml
+htmlcov/
+*.bak
+*.bak[0-9]
+*.orig
+*.corrupted
