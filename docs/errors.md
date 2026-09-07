@@ -1,85 +1,132 @@
 # Error Taxonomy
 
-This document defines the standard error response shape used across all API routes.
+## Overview
 
-## Standard Error Response Shape
-
-All error responses return JSON with the following structure:
+All API responses follow consistent error conventions. No stack traces are ever leaked to clients. Every error response has the same top-level shape:
 
 ```json
 {
-  "error": "<error_code_or_type>",
+  "error": "<short machine-readable error type>",
   "detail": "<human-readable description>",
-  "degraded": <boolean | omitted>
+  "degraded": <bool | null>
 }
 ```
 
-- `error`: A short machine-readable error identifier (e.g., `tenant_not_found`, `job_not_found`, `tenant_mismatch`).
-- `detail`: A human-readable description of the error.
-- `degraded`: `true` when the service is partially available (e.g., circuit breaker open), `false` or omitted otherwise.
+The `degraded` field is only present when the service is partially unavailable (see `RagError` below).
 
-## Error Classes
+---
 
-### 404 Not Found
+## Error Types by Category
 
-| Error Code | Description | Routes |
-|---|---|---|
-| `tenant_not_found` | The tenant identifier was not found in the system. | `GET /{tenant}...`, `POST /{tenant}...`, `DELETE /{tenant}...`, etc. |
-| `job_not_found` | The requested job ID does not exist. | `GET /{tenant}/jobs/{job_id}`, `DELETE /{tenant}/jobs/{job_id}` |
+### 4xx Client Errors (Validation / Not Found)
 
-### 403 Forbidden
+| Status | Error Key | Detail Convention | Example |
+|--------|-----------|-------------------|---------|
+| **400** | `validation_error` | Describe invalid field(s) | `"Invalid or missing required field"` |
+| **401** | `authentication_error` | Missing/invalid auth token | `"Missing or invalid authentication token"` |
+| **403** | `authorization_error` | Insufficient permissions | `"Access denied: insufficient permissions"` |
+| **404** | `not_found` | Resource does not exist | `"Tenant not found"` |
+| **422** | `validation_error` | Field-level validation errors | See [Validation Errors](#validation-errors) below |
 
-| Error Code | Description | Routes |
-|---|---|---|
-| `tenant_mismatch` | The API key's tenant does not match the path tenant. | Routes with `{tenant}` path param and auth key |
+### 5xx Server Errors
 
-### 400 Bad Request
+| Status | Error Key | Detail Convention | Example |
+|--------|-----------|-------------------|---------|
+| **500** | `internal_error` | Unexpected server error | `"internal error"` |
+| **503** | `service_unavailable` | Dependency degraded (Qdrant, embedder, reranker) | `"qdrant temporarily unavailable (degraded mode)"` |
 
-| Error Code | Description | Routes |
-|---|---|---|
-| Missing required fields | Required request body fields are missing. | Various POST routes |
-| Invalid input format | Request body does not match the expected schema. | Various routes |
+---
 
-### 502 Bad Gateway
+## Validation Errors (422)
 
-| Error Code | Description | Routes |
-|---|---|---|
-| `retrieval_unavailable` | The retrieval backend (Qdrant) is temporarily unavailable. | Query routes |
+FastAPI\x27s default 422 validation error response is overridden to a consistent shape:
 
-### 503 Service Unavailable
-
-| Error Code | Description | Routes |
-|---|---|---|
-| `qdrant_unavailable` | The Qdrant vector store is temporarily unavailable. | All routes requiring vector store access |
-
-## Error Handler Implementation
-
-The centralized error handler in `app/main.py` (`_rag_error_handler`) ensures consistent error responses:
-
-```python
-@app.exception_handler(RagError)
-async def _rag_error_handler(request: Request, exc: RagError):
-    status_code = 503 if exc.degraded else 500
-    return JSONResponse(
-        status_code=status_code,
-        content={
-            "error": exc.public_detail,
-            "degraded": exc.degraded,
-            "detail": exc.public_detail,
-        },
-    )
+```json
+{
+  "error": "validation_error",
+  "detail": [
+    {
+      "loc": ["body", "field_name", ...],
+      "msg": "<human-readable message>",
+      "type": "<validation error type>",
+      "ctx": { "<context keys>" }
+    }
+  ]
+}
 ```
 
-Unhandled exceptions follow a similar pattern with `internal error` as the error type.
+The `detail` field is an array of validation error objects, each containing:
+- `loc`: JSON path to the invalid field
+- `msg`: Description of the validation failure
+- `type`: Error type name (e.g., "missing", "value_error.strict")
+- `ctx`: Additional context (e.g., `min_length`, `max_length`)
 
-## Consistency Rules
+---
 
-1. **All 404 responses** for "not found" errors must use `error: "tenant_not_found"` or `error: "job_not_found"` as appropriate, with `detail` describing the specific missing resource.
+## RagError (Service-Degraded Errors)
 
-2. **All 403 responses** for tenant mismatch must use `error: "tenant_mismatch"`.
+Raised when a backend dependency (Qdrant, embedder, reranker) is partially unavailable. Returns a clean, contract-shaped response:
 
-3. **All 503 responses** for degraded service must include `"degraded": true` in the response body.
+```json
+{
+  "error": "service_degraded",
+  "detail": "<public_detail from RagError>",
+  "degraded": true
+}
+```
 
-4. **No error response** should leak raw exception types or stack traces to clients.
+The `RagError` class:
 
-5. **Validation errors** (422) use the FastAPI-generated `HTTPValidationError` schema with location, message, and error type details.
+| Field | Type | Description |
+|-------|------|-------------|
+| `public_detail` | `str` | Safe to return to clients; describes the issue in user terms |
+| `internal` | `str \| None` | Internal diagnostic info; **never** leaked to clients |
+| `degraded` | `bool` | `True` when service is partially available; `False` when fully unavailable |
+
+Handler: `_rag_error_handler` (line 257-272 in `app/main.py`) formats `RagError` into the standard error response shape.
+
+---
+
+## HTTPException (Generic Server Errors)
+
+All `HTTPException` raises follow this convention:
+
+```json
+{
+  "error": "<error_key>",
+  "detail": "<descriptive_message>",
+  "degraded": null
+}
+```
+
+- **503**: `"qdrant unreachable"` (from line 396 of `app/main.py`)
+- **404**: `"tenant not found"` / `"not found"` (various routes)
+- **422**: Various validation messages (lines 962-975 of `app/main.py`)
+
+---
+
+## Convention Summary
+
+| Aspect | Rule |
+|--------|------|
+| **Top-level keys** | `error`, `detail`, `degraded` (optional) |
+| **`error` value** | Machine-readable error type key (see table above) |
+| **`detail` value** | String (top-level) or array of validation error objects (422) |
+| **`degraded` value** | `true`, `false`, or `null` (absent when not applicable) |
+| **No stack traces** | Never returned to clients; always logged server-side |
+| **Error keys** | Use the consistent keys defined in this taxonomy |
+
+---
+
+## Global Error Handler
+
+The `_unhandled_error_handler` (line 325 in `app/main.py`) serves as the last-resort handler. It logs the exception type only and returns:
+
+```json
+{
+  "error": "internal error",
+  "degraded": false
+}
+```
+
+This ensures that even unexpected exceptions never leak raw Python exception text or stack traces to clients.
