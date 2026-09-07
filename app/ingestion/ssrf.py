@@ -151,10 +151,14 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
     pinned_url = f"{parsed.scheme}://{pinned_ip}{port}{path}"
 
     headers = {"User-Agent": "rag-service/1.0", "Host": host}
+    # We connect to the pinned IP (DNS-rebinding defense) but TLS must still be
+    # negotiated and the cert verified against the ORIGINAL hostname, not the IP.
+    # httpx's `sni_hostname` extension sets both the SNI and the cert-check name.
+    sni = {"sni_hostname": host}
     # follow_redirects=False -> we revalidate each hop ourselves.
     resp = httpx.get(
         pinned_url, timeout=timeout, follow_redirects=False,
-        headers=headers,
+        headers=headers, extensions=sni,
     )
     # Re-validate redirects hop-by-hop.
     seen = 0
@@ -190,7 +194,7 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
         pinned_url = f"{r2.scheme}://{pinned_ip}{port2}{path2}"
         headers["Host"] = nh
         resp = httpx.get(pinned_url, timeout=timeout, follow_redirects=False,
-                         headers=headers)
+                         headers=headers, extensions={"sni_hostname": nh})
     resp.raise_for_status()
 
     # Size cap: stream so we never buffer an unbounded body into memory.

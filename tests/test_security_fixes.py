@@ -45,6 +45,42 @@ def test_ssrf_blocks_non_public_resolved_ip():
         _validate_target("100.64.0.1")
 
 
+def test_ssrf_ip_pinned_fetch_still_verifies_cert_against_hostname(monkeypatch):
+    """Regression: the fetch connects to the validated IP (DNS-rebinding defense) but
+    TLS/SNI + cert verification MUST use the original hostname, or every https:// URL
+    fails with 'certificate is not valid for <ip>'. We pass httpx the `sni_hostname`
+    extension for exactly this."""
+    import app.ingestion.ssrf as ssrf
+
+    monkeypatch.setattr(ssrf, "_validate_target", lambda host: "93.184.216.34")
+
+    seen = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_bytes(self, chunk_size=0):
+            yield b"<html><body>hello world</body></html>"
+
+    def _fake_get(url, **kw):
+        seen["url"] = url
+        seen["ext"] = kw.get("extensions") or {}
+        seen["host_header"] = (kw.get("headers") or {}).get("Host")
+        return _Resp()
+
+    monkeypatch.setattr(ssrf.httpx, "get", _fake_get)
+
+    out = ssrf.safe_fetch_url("https://example.com/page")
+    assert "93.184.216.34" in seen["url"]              # connected to the pinned IP
+    assert seen["ext"].get("sni_hostname") == "example.com"  # TLS verified vs hostname
+    assert seen["host_header"] == "example.com"
+    assert "hello world" in out
+
+
 # ---------------- #2 RBAC server-enforced ----------------
 def test_rbac_self_escalation_dropped(client):
     from app.rbac import resolve_acl
