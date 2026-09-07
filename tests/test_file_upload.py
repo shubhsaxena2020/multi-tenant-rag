@@ -92,6 +92,7 @@ def test_upload_code_file(client):
 
 
 def test_upload_pdf_extracts_real_text(client):
+    pytest.importorskip("pypdf")
     t = _make_tenant(client)
     auth = _auth(t["api_key"])
     r = _upload(client, auth, "whitepaper.pdf", _pdf_bytes())

@@ -36,7 +36,7 @@ def test_widget_script_syntax_valid():
     start = html.index("<script>") + len("<script>")
     end = html.index("</script>")
     script = html[start:end]
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
         f.write(script)
         path = f.name
     try:
@@ -56,7 +56,7 @@ def test_rendermarkdown_safe_and_formats():
         + block
         + "\nmodule.exports = { renderMarkdown, escapeHtml, safeHref };\n"
     )
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False, encoding="utf-8") as f:
         f.write(harness)
         path = f.name
     try:

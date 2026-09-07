@@ -152,7 +152,7 @@ def _node_apply_branding(html, cases):
 
 
 def test_widget_apply_branding_no_injection():
-    html = open(WIDGET_HTML).read()
+    html = open(WIDGET_HTML, encoding="utf-8").read()
     cases = {
         "good": {
             "accent": "#ff0000",
