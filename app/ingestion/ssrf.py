@@ -42,6 +42,12 @@ _BLOCKED_NETWORKS = [
     )
 ]
 
+
+def _url_host(ip: str) -> str:
+    """IPv6 literals must be bracketed in a URL authority, or the colons parse as a port."""
+    return f"[{ip}]" if ":" in ip else ip
+
+
 _ALLOWED_SCHEMES = {"http", "https"}
 _MAX_BYTES = 20 * 1024 * 1024  # 20 MB cap on fetched body
 
@@ -148,18 +154,34 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
     path = parsed.path or "/"
     if parsed.query:
         path += "?" + parsed.query
-    pinned_url = f"{parsed.scheme}://{pinned_ip}{port}{path}"
+    pinned_url = f"{parsed.scheme}://{_url_host(pinned_ip)}{port}{path}"
 
-    headers = {"User-Agent": "rag-service/1.0", "Host": host}
+    base_headers = {"User-Agent": "rag-service/1.0"}
+
     # We connect to the pinned IP (DNS-rebinding defense) but TLS must still be
-    # negotiated and the cert verified against the ORIGINAL hostname, not the IP.
-    # httpx's `sni_hostname` extension sets both the SNI and the cert-check name.
-    sni = {"sni_hostname": host}
-    # follow_redirects=False -> we revalidate each hop ourselves.
-    resp = httpx.get(
-        pinned_url, timeout=timeout, follow_redirects=False,
-        headers=headers, extensions=sni,
-    )
+    # negotiated and the server cert verified against the ORIGINAL hostname, not the
+    # IP literal. httpx's `sni_hostname` request extension sets both the SNI and the
+    # cert-check name. It is only accepted via Client.build_request()/send() (the
+    # module-level httpx.get() dropped **extensions in httpx 0.28), so use a Client.
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+        return _fetch_with_client(client, base_headers, pinned_url, host, url)
+
+
+def _fetch_with_client(client, base_headers, pinned_url, host, url):
+    from urllib.parse import urlparse
+
+    from fastapi import HTTPException, status
+
+    def _fetch(target_url: str, host_header: str):
+        req = client.build_request(
+            "GET", target_url,
+            headers={**base_headers, "Host": host_header},
+            extensions={"sni_hostname": host_header},
+        )
+        return client.send(req)
+
+    resp = _fetch(pinned_url, host)
+    headers = {"Host": host}  # tracked for redirect-hop logging/compat
     # Re-validate redirects hop-by-hop.
     seen = 0
     while resp.status_code in (301, 302, 303, 307, 308):
@@ -191,10 +213,9 @@ def safe_fetch_url(url: str, timeout: float = 20.0) -> str:
         path2 = r2.path or "/"
         if r2.query:
             path2 += "?" + r2.query
-        pinned_url = f"{r2.scheme}://{pinned_ip}{port2}{path2}"
+        pinned_url = f"{r2.scheme}://{_url_host(pinned_ip)}{port2}{path2}"
         headers["Host"] = nh
-        resp = httpx.get(pinned_url, timeout=timeout, follow_redirects=False,
-                         headers=headers, extensions={"sni_hostname": nh})
+        resp = _fetch(pinned_url, nh)
     resp.raise_for_status()
 
     # Size cap: stream so we never buffer an unbounded body into memory.
