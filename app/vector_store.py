@@ -1,19 +1,12 @@
 """Qdrant-backed per-tenant vector store — production scale.
-
-Isolation: all tenants share a single collection `{collection_prefix}` and are
-separated by a payload field `tenant_id` with a keyword index and `is_tenant=true`.
-
-Hybrid retrieval: each chunk is stored with a DENSE vector (for ANN recall) and a
-SPARSE vector (lexical, BGE-M3 native). `query_points` runs dense; `query_points`
-with sparse runs lexical; retrieval/__init__.py fuses them with Reciprocal Rank Fusion.
-
+Isolation: all tenants share a single collection `{collection_prefix}` and are separated by a payload field `tenant_id` with a keyword index and `is_tenant=true`.
+Hybrid retrieval: each chunk is stored with a DENSE vector (for ANN recall) and a SPARSE vector (lexical, BGE-M3 native). `query_points` runs dense; `query_points` with sparse runs lexical; retrieval/__init__.py fuses them with Reciprocal Rank Fusion.
 Resilience/scale:
 - A single module-level QdrantClient (connection-pooled) — NOT one per call.
 - Batch upsert (configurable batch size) to absorb large ingestion throughput.
 - Encrypted `text` at rest via app.crypto (per-tenant AES-GCM).
 - Quotas enforced at write time (chunk + vector caps) to protect a shared fleet.
 """
-
 from __future__ import annotations
 
 import threading
@@ -38,89 +31,6 @@ from . import crypto
 from .config import get_settings
 from .resilience import RagError, with_retry
 
-# Isolation tier strategy interface (architecture.md §5.2)
-# Makes the vector layout explicit so shared and dedicated layouts can coexist.
-# Current default: shared collection with tenant_id payload filtering.
-# Future: dedicated collection per tenant, or dedicated cluster for regulated tenants.
-VectorLayoutStrategy = dict[str, Any]
-
-
-def get_isolation_tier() -> str:
-    """Return the current isolation tier from control plane config.
-
-    Expected values per architecture.md §5.2 Isolation tiering model:
-      - "shared"       : one shared Qdrant collection, tenant_id payload filter
-      - "dedicated"    : one Qdrant collection per tenant
-      - "regulated"    : separate Qdrant and app deployment stamp
-    """
-    s = get_settings()
-    return getattr(s, "isolation_tier", "shared")
-
-
-# Backward-compatible helper: returns the collection prefix (ignores tenant_id).
-def collection_name(prefix: str, tenant_id: str) -> str:
-    return prefix
-
-
-def ensure_collection(client: QdrantClient, tier: str | None = None) -> str:
-    """Ensure the Qdrant collection exists per the active isolation tier.
-
-    Args:
-        client: QdrantClient instance
-        tier: isolation tier override; defaults to get_isolation_tier()
-
-    Behavior per tier:
-      - "shared"   : one collection, tenant_id payload index (current default)
-      - "dedicated": one collection per tenant_id
-      - "regulated": separate collection + deployment stamp concept
-    """
-    tier = tier or get_isolation_tier()
-    s = get_settings()
-    name = s.collection_prefix  # e.g., "rag"
-
-    if tier == "shared":
-        if not client.collection_exists(name):
-            client.create_collection(
-                name,
-                vectors_config=VectorParams(size=s.vector_size, distance=Distance.COSINE),
-                sparse_vectors_config={"text": SparseVectorParams()},
-            )
-        # Payload index for tenant_id with is_tenant=true for efficient tenant-scoped reads.
-        try:
-            client.create_payload_index(
-                collection_name=name,
-                field_name="tenant_id",
-                field_schema=KeywordIndexParams(
-                    type=KeywordIndexType.KEYWORD,
-                    is_tenant=True,
-                ),
-            )
-        except Exception:
-            pass
-    elif tier == "dedicated":
-        # Each tenant gets its own collection name
-        coll = f"{name}_{tenant_id}"
-        if not client.collection_exists(coll):
-            client.create_collection(
-                coll,
-                vectors_config=VectorParams(size=s.vector_size, distance=Distance.COSINE),
-                sparse_vectors_config={"text": SparseVectorParams()},
-            )
-            # Dedicated collection: no shared tenant index needed
-        return coll
-    elif tier == "regulated":
-        # Separate collection + deployment stamp concept
-        coll = f"{name}_regulated_{tenant_id}"
-        if not client.collection_exists(coll):
-            client.create_collection(
-                coll,
-                vectors_config=VectorParams(size=s.vector_size, distance=Distance.COSINE),
-                sparse_vectors_config={"text": SparseVectorParams()},
-            )
-        return coll
-    return name
-
-
 _BATCH = 256
 _client: QdrantClient | None = None
 _client_lock = threading.Lock()
@@ -130,6 +40,7 @@ _client_lock = threading.Lock()
 # or `qdrant://host` URL. Embedded mode runs the storage engine in-process.
 _LOCAL_MEMORY = ":memory:"
 _LOCAL_PREFIX = "qdrant-local://"
+
 
 def _build_client() -> QdrantClient:
     s = get_settings()
@@ -165,6 +76,36 @@ def reset_client() -> None:
         _client = None
 
 
+def collection_name(prefix: str, tenant_id: str) -> str:
+    """Backward-compatible helper: returns the collection prefix (ignores tenant_id)."""
+    return prefix
+
+
+def ensure_collection(client: QdrantClient) -> str:
+    """Ensure the shared collection exists and has the tenant_id payload index."""
+    s = get_settings()
+    name = s.collection_prefix  # e.g., "rag"
+    if not client.collection_exists(name):
+        client.create_collection(
+            name,
+            vectors_config=VectorParams(size=s.vector_size, distance=Distance.COSINE),
+            sparse_vectors_config={"text": SparseVectorParams()},
+        )
+    # Payload index for tenant_id with is_tenant=true for efficient tenant-scoped reads.
+    try:
+        client.create_payload_index(
+            collection_name=name,
+            field_name="tenant_id",
+            field_schema=KeywordIndexParams(
+                type=KeywordIndexType.KEYWORD,
+                is_tenant=True,
+            ),
+        )
+    except Exception:
+        pass
+    return name
+
+
 def _sparse_vec(svec: dict[int, float]) -> SparseVector:
     return SparseVector(indices=list(svec.keys()), values=list(svec.values()))
 
@@ -181,7 +122,7 @@ def upsert_chunks(
 ) -> list[str]:
     """Store chunks with dense+sparse vectors and encrypted text. Returns chunk ids."""
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
+    name = ensure_collection(client)
     points: list[PointStruct] = []
     chunk_ids: list[str] = []
     for i, (text, dvec, svec) in enumerate(zip(chunks, dense, sparse)):
@@ -213,7 +154,7 @@ def upsert_chunks(
 def delete_document(tenant_id: str, doc_id: str) -> int:
     """Delete a document by tenant_id and doc_id. Returns number of points deleted."""
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
+    name = ensure_collection(client)
     # We must filter by both tenant_id and doc_id to avoid deleting another tenant's document.
     selector = Filter(
         must=[
@@ -232,8 +173,10 @@ def delete_document(tenant_id: str, doc_id: str) -> int:
 def delete_tenant_collection(tenant_id: str) -> bool:
     """Delete all points for a given tenant_id. Returns True if any points were deleted."""
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
-    selector = Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))])
+    name = ensure_collection(client)
+    selector = Filter(
+        must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
+    )
     client.delete(collection_name=name, points_selector=selector)
     # Return True if the delete was acknowledged.
     return True
@@ -247,9 +190,11 @@ def search_dense(
     acl_filter: Filter | None = None,
 ) -> list[dict[str, Any]]:
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
+    name = ensure_collection(client)
     # We must filter by tenant_id in addition to any acl_filter.
-    filter_ = Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))])
+    filter_ = Filter(
+        must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
+    )
     if acl_filter is not None and acl_filter.must is not None:
         # Combine the tenant filter with the acl_filter.
         filter_.must.extend(acl_filter.must)
@@ -273,15 +218,18 @@ def search_sparse(
     acl_filter: Filter | None = None,
 ) -> list[dict[str, Any]]:
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
-    filter_ = Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))])
+    name = ensure_collection(client)
+    filter_ = Filter(
+        must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
+    )
     if acl_filter is not None and acl_filter.must is not None:
         filter_.must.extend(acl_filter.must)
     try:
         resp = with_retry(
             "qdrant",
             lambda: client.query_points(
-                name, query=_sparse_vec(sparse), using="text", limit=limit, score_threshold=score_threshold, query_filter=filter_
+                name, query=_sparse_vec(sparse), using="text", limit=limit,
+                score_threshold=score_threshold, query_filter=filter_
             ),
         )
     except RagError:
@@ -313,11 +261,12 @@ def search_hybrid(
     rrf_weights: list[float] | None = None,
     acl_filter: Filter | None = None,
 ) -> list[dict[str, Any]]:
-    """Native Qdrant hybrid search using prefetch + server-side RRF/DBSF fusion.
-
+    """
+    Native Qdrant hybrid search using prefetch + server-side RRF/DBSF fusion.
+    
     This replaces the client-side RRF fusion in retrieval/__init__.py by pushing
     both dense and sparse retrieval to Qdrant and letting it fuse results server-side.
-
+    
     Args:
         tenant_id: Tenant identifier for isolation
         dense_vector: Dense embedding vector
@@ -328,15 +277,17 @@ def search_hybrid(
         rrf_k: RRF constant k (default 60, higher = more weight to lower ranks)
         rrf_weights: Optional weights for each prefetch (e.g., [3.0, 1.0] for dense:sparse)
         acl_filter: Optional additional ACL filter
-
+        
     Returns:
         List of hits with chunk_id, doc_id, title, text, metadata, score
     """
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
+    name = ensure_collection(client)
 
     # Build tenant filter (always required for isolation)
-    tenant_filter = Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))])
+    tenant_filter = Filter(
+        must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
+    )
     if acl_filter is not None and acl_filter.must is not None:
         tenant_filter.must.extend(acl_filter.must)
 
@@ -349,7 +300,8 @@ def search_hybrid(
     )
     sparse_prefetch = models.Prefetch(
         query=models.SparseVector(
-            indices=list(sparse_vector.keys()), values=list(sparse_vector.values())
+            indices=list(sparse_vector.keys()),
+            values=list(sparse_vector.values())
         ),
         using="text",  # sparse vector name
         limit=candidate_k,
@@ -391,7 +343,7 @@ def get_document_chunks(tenant_id: str, doc_id: str) -> list[dict]:
     Returns a list of {chunk_id, title, text, metadata} ordered by chunk id.
     """
     client = get_client()
-    name = ensure_collection(client, tier=get_isolation_tier())
+    name = ensure_collection(client)
     qfilter = Filter(must=[
         FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
         FieldCondition(key="doc_id", match=MatchValue(value=doc_id)),
