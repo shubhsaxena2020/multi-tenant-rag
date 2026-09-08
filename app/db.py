@@ -53,6 +53,9 @@ class Tenant(Base):
     # end-user input), so it is the system's own instruction surface, not subject to the
     # user-input injection filtering owned by the parallel P0/P1 security session. Empty = default.
     system_prompt: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    # PHASE G: optional outbound webhook URLs (tenant-controlled callback targets).
+    lead_webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingest_webhook_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     # PHASE I: per-tenant rate limit overrides (requests/min). NULL = use global default.
     rate_limit_rpm: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # PHASE I: per-tenant ingest job rate limit (jobs/min). NULL = use global default.
@@ -198,6 +201,8 @@ async def init_db() -> None:
             ("tenants", "chunk_quota", "INTEGER"),
             ("tenants", "branding", "TEXT"),
             ("tenants", "system_prompt", "TEXT"),
+            ("tenants", "lead_webhook_url", "TEXT"),
+            ("tenants", "ingest_webhook_url", "TEXT"),
             ("tenants", "allowed_groups", "TEXT"),
             ("tenants", "rate_limit_rpm", "INTEGER"),
             ("tenants", "ingest_rate_limit_rpm", "INTEGER"),
@@ -468,6 +473,8 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
+                "lead_webhook_url": t.lead_webhook_url,
+                "ingest_webhook_url": t.ingest_webhook_url,
                 "rate_limit_rpm": t.rate_limit_rpm,
                 "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
                 "chunk_quota": t.chunk_quota,
@@ -493,6 +500,8 @@ async def get_tenant(tenant_id: str, session: AsyncSession | None = None) -> dic
                 "allowed_groups": allowed_groups,
                 "branding": _parse_json(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
+                "lead_webhook_url": t.lead_webhook_url,
+                "ingest_webhook_url": t.ingest_webhook_url,
                 "rate_limit_rpm": t.rate_limit_rpm,
                 "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
                 "chunk_quota": t.chunk_quota,
@@ -513,6 +522,8 @@ async def list_tenants(session: AsyncSession | None = None) -> list[dict]:
                 "chunk_count": t.chunk_count,
                 "branding": _json_loads_or(t.branding, {}),
                 "system_prompt": t.system_prompt or "",
+                "lead_webhook_url": t.lead_webhook_url,
+                "ingest_webhook_url": t.ingest_webhook_url,
                 "allowed_groups": _json_loads_or(t.allowed_groups, ["*"]),
                 "rate_limit_rpm": t.rate_limit_rpm,
                 "ingest_rate_limit_rpm": t.ingest_rate_limit_rpm,
@@ -591,6 +602,48 @@ async def set_tenant_system_prompt(tenant_id: str, system_prompt: str, session: 
         result = await s.execute(stmt)
         await s.commit()
         return (result.rowcount or 0) > 0
+
+
+async def set_tenant_lead_webhook(tenant_id: str, url: str | None, session: AsyncSession | None = None) -> bool:
+    """Persist a tenant's lead webhook URL. `None` clears the callback."""
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(lead_webhook_url=url)
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return (result.rowcount or 0) > 0
+
+
+async def get_lead_webhook_url(tenant_id: str, session: AsyncSession | None = None) -> str | None:
+    """Return the tenant's lead webhook URL, if any."""
+    t = await get_tenant(tenant_id, session)
+    if not t:
+        return None
+    return t.get("lead_webhook_url")
+
+
+async def set_tenant_ingest_webhook(tenant_id: str, url: str | None, session: AsyncSession | None = None) -> bool:
+    """Persist a tenant's ingestion webhook URL. `None` clears the callback."""
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(ingest_webhook_url=url)
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return (result.rowcount or 0) > 0
+
+
+async def get_ingest_webhook_url(tenant_id: str, session: AsyncSession | None = None) -> str | None:
+    """Return the tenant's ingestion webhook URL, if any."""
+    t = await get_tenant(tenant_id, session)
+    if not t:
+        return None
+    return t.get("ingest_webhook_url")
 
 
 # ---- Document registry (GitHub issue #4: idempotent + replace-on-change re-ingestion) ----

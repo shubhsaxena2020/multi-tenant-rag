@@ -90,6 +90,7 @@ from .models import (
     TenantKeysOut,
     TenantOut,
     TenantSystemPromptIn,
+    TenantWebhooksIn,
     WidgetConfigOut,
     UploadOut,
 )
@@ -109,9 +110,11 @@ from .observability import (
 from .usage import get_usage_summary, get_usage_timeseries, record_usage, record_usage_bg
 from .feedback import get_feedback_summary, list_feedback, save_feedback
 from .leads import get_lead_summary, list_leads, save_lead
+from .db import get_lead_webhook_url, set_tenant_ingest_webhook, set_tenant_lead_webhook
 from .knowledge_gaps import list_knowledge_gaps, record_knowledge_gap, record_knowledge_gap_bg, count_knowledge_gaps
 from .token_usage import get_token_usage, get_fleet_token_usage, record_token_usage, record_token_usage_bg
 from .analytics import get_analytics_csv_rows, get_tenant_analytics, get_fleet_summary
+from .webhook import dispatch_lead_webhook
 from .ratelimit import rate_limit
 from .rbac import (
     PUBLIC_GROUP,
@@ -1766,6 +1769,58 @@ async def post_feedback(tenant: str, body: FeedbackIn, auth: TenantDep, request:
     return {"id": fid, "rating": body.rating}
 
 
+def _validate_webhook_url(url: str) -> None:
+    """SSRF-guard a tenant-supplied webhook URL at config time (fail-closed)."""
+    from .ingestion.ssrf import validate_url_for_egress
+
+    try:
+        validate_url_for_egress(url, allow_private=get_settings().webhook_allow_private, resolve=False)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"webhook URL rejected (SSRF guard): {e}",
+        ) from e
+
+
+@app.get("/api/v1/{tenant}/config", response_model=dict)
+async def get_config(tenant: str, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
+    """Read the tenant's webhook config state (legacy compatibility for the branch tests)."""
+    rate_limit(request, auth.tenant_id)
+    row = await tenants.get_tenant(auth.tenant_id)
+    webhook = (row or {}).get("lead_webhook_url", "") if isinstance(row, dict) else getattr(row, "lead_webhook_url", "")
+    ingest = (row or {}).get("ingest_webhook_url", "") if isinstance(row, dict) else getattr(row, "ingest_webhook_url", "")
+    return {
+        "tenant_id": auth.tenant_id,
+        "lead_webhook_configured": bool(webhook),
+        "ingest_webhook_configured": bool(ingest),
+    }
+
+
+@app.get("/api/v1/{tenant}/leads", response_model=list[dict])
+async def get_leads(tenant: str, auth: TenantDep, request: Request,
+                    _: None = Depends(require_secret_key), limit: int = 200):
+    rate_limit(request, auth.tenant_id)
+    return await list_leads(auth.tenant_id, limit=limit)
+
+
+@app.patch("/api/v1/{tenant}/webhooks", response_model=dict, status_code=status.HTTP_200_OK)
+@app.post("/api/v1/{tenant}/config", response_model=dict, status_code=status.HTTP_200_OK)
+async def set_webhooks(tenant: str, body: TenantWebhooksIn, auth: TenantDep, request: Request,
+                       _: None = Depends(require_secret_key)):
+    """Set tenant outbound webhook URLs with SSRF validation."""
+    rate_limit(request, auth.tenant_id)
+    if body.lead_webhook_url is not None:
+        if body.lead_webhook_url:
+            _validate_webhook_url(body.lead_webhook_url)
+        await set_tenant_lead_webhook(auth.tenant_id, body.lead_webhook_url)
+    if body.ingest_webhook_url is not None:
+        if body.ingest_webhook_url:
+            _validate_webhook_url(body.ingest_webhook_url)
+        await set_tenant_ingest_webhook(auth.tenant_id, body.ingest_webhook_url)
+    return {"ok": True}
+
+
+@app.post("/api/v1/{tenant}/lead", response_model=dict, status_code=status.HTTP_201_CREATED)
 @app.post("/api/v1/{tenant}/handoff", response_model=dict, status_code=status.HTTP_200_OK)
 async def post_handoff(tenant: str, body: HandoffIn, auth: TenantDep, request: Request, _: None = Depends(require_secret_key)):
     """PHASE D (#33): capture a human-handoff lead for an out-of-scope / unanswered query.
@@ -1784,6 +1839,26 @@ async def post_handoff(tenant: str, body: HandoffIn, auth: TenantDep, request: R
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    webhook_url = await get_lead_webhook_url(auth.tenant_id)
+    if webhook_url:
+        payload = {
+            "lead_id": lid,
+            "tenant_id": auth.tenant_id,
+            "name": body.name,
+            "email": body.email,
+            "question": body.question,
+            "message": body.message,
+            "session_id": body.session_id,
+        }
+        try:
+            import asyncio
+
+            async def _dispatch() -> None:
+                await asyncio.to_thread(dispatch_lead_webhook, webhook_url, payload, auth.tenant_id)
+
+            asyncio.create_task(_dispatch())
+        except Exception:  # noqa: BLE001 - never fail the inbound lead capture
+            pass
     return {"id": lid}
 
 

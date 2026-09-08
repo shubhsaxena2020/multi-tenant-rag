@@ -16,6 +16,7 @@ os.environ["ADMIN_API_KEY"] = "test-admin-key-for-tests"
 os.environ["USE_REAL_EMBEDDER"] = "0"
 os.environ["USE_REAL_RERANKER"] = "0"
 os.environ["MASTER_ENCRYPTION_KEY"] = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+os.environ["WEBHOOK_ALLOW_PRIVATE"] = "1"
 
 
 @pytest.fixture(autouse=True)
@@ -57,8 +58,16 @@ def _clear_settings_cache():
     finally:
         # Teardown: remove the temporary database file and clear settings again.
         try:
+            import app.db
+            engine = app.db._engine
+            if engine is not None:
+                asyncio.run(engine.dispose())
+                app.db._engine = None
+                app.db._session_maker = None
             os.unlink(db_path)
         except FileNotFoundError:
+            pass
+        except PermissionError:
             pass
         get_settings.cache_clear()
         reset_client()

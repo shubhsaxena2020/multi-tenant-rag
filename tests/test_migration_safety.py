@@ -9,12 +9,12 @@ Any column added to a model but NOT listed in migrations is a migration gap.
 """
 
 import os
+import asyncio
 import pytest
 import warnings
 
 
-@pytest.mark.asyncio
-async def test_migration_guard_adds_missing_columns_idempotently():
+def test_migration_guard_adds_missing_columns_idempotently():
     """Verify that _run_add_column_migrations adds columns listed in migrations."""
     from app.db import init_db, _run_add_column_migrations, _column_exists
     from app.config import get_settings
@@ -33,7 +33,7 @@ async def test_migration_guard_adds_missing_columns_idempotently():
 
         # Use await directly since test is marked @pytest.mark.asyncio
         # and pytest-asyncio provides a running event loop.
-        await init_db()
+        asyncio.run(init_db())
 
         # Verify each migration entry can be introspected
         from app.db import get_engine, Base
@@ -66,14 +66,20 @@ async def test_migration_guard_adds_missing_columns_idempotently():
                 return row.first() is not None
 
         for table, column, col_type in migrations:
-            exists = await _check_column_exists(dialect, table, column)
+            exists = asyncio.run(_check_column_exists(dialect, table, column))
             # If column already exists (e.g. from prior test runs), that's fine
             # the test proves the migration guard handles it
 
-        os.unlink(db_path)
+        try:
+            os.unlink(db_path)
+        except PermissionError:
+            pass
 
     finally:
         import app.db
+        engine = app.db._engine
+        if engine is not None:
+            asyncio.run(engine.dispose())
         app.db._engine = None
         app.db._session_maker = None
 

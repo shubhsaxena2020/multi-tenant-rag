@@ -13,32 +13,21 @@ Progress push support (Task 4):
 from __future__ import annotations
 
 import asyncio
-import threading
-from concurrent.futures import ThreadPoolExecutor
 
 from .. import jobs
+from ..job_queue import get_job_queue
 from ..observability import INGEST_CHUNKS, INGEST_JOBS, get_logger
 from . import ingest_text, ingest_url
 
 log = get_logger("rag")
 
-_executor: ThreadPoolExecutor | None = None
-_lock = threading.Lock()
-
-
-def _ensure_executor() -> ThreadPoolExecutor:
-    global _executor
-    with _lock:
-        if _executor is None:
-            _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ingest")
-    return _executor
-
 
 def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+    result = None
     try:
-        loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
+        result = loop.run_until_complete(_run_async(job_id, tenant_id, kind, payload, metadata))
     except Exception as e:
         log.exception("ingest_job_failed")
         # Sanitize error before persisting/logging (G): keep type + short message,
@@ -47,7 +36,22 @@ def _run(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict |
         loop.run_until_complete(jobs.update_job(job_id, status="failed", error=safe_err))
         INGEST_JOBS.labels(status="failed").inc()
         log.error("ingest_job_failed", extra={"tenant_id": tenant_id, "job_id": job_id, "error": safe_err})
+        result = {"status": "failed", "error": safe_err}
     finally:
+        if result is not None:
+            if result.get("status") == "completed":
+                _fire_ingest_webhook(tenant_id, job_id, result, loop)
+                loop.run_until_complete(jobs.update_job(
+                    job_id, status="completed", progress=1.0, result_doc_id=result["result_doc_id"]
+                ))
+                INGEST_CHUNKS.inc(result["chunk_count"])
+                INGEST_JOBS.labels(status="completed").inc()
+                log.info(
+                    "ingest_job_completed",
+                    extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]},
+                )
+            else:
+                _fire_ingest_webhook(tenant_id, job_id, result, loop)
         loop.close()
 
 
@@ -120,11 +124,31 @@ async def _run_async(job_id: str, tenant_id: str, kind: str, payload: dict, meta
         except Exception as e:
             log.warning("progress_push_failed", extra={"job_id": cb["job_id"], "error": str(e)[:200]})
 
-    await jobs.update_job(job_id, status="completed", progress=1.0, result_doc_id=result["doc_id"])
-    INGEST_CHUNKS.inc(result["chunk_count"])
-    INGEST_JOBS.labels(status="completed").inc()
-    log.info("ingest_job_completed", extra={"tenant_id": tenant_id, "job_id": job_id, "chunk_count": result["chunk_count"]})
+    return {"status": "completed", "result_doc_id": result["doc_id"], "chunk_count": result["chunk_count"]}
+
+
+def _fire_ingest_webhook(tenant_id: str, job_id: str, result: dict, loop: asyncio.AbstractEventLoop) -> None:
+    """Best-effort tenant ingestion webhook. Never raises; never affects the job."""
+    try:
+        from ..db import get_ingest_webhook_url
+        from ..webhook import dispatch_webhook
+
+        url = loop.run_until_complete(get_ingest_webhook_url(tenant_id))
+        if not url:
+            return
+        payload = {
+            "event": "ingest.job",
+            "job_id": job_id,
+            "tenant_id": tenant_id,
+            "status": result.get("status"),
+            "result_doc_id": result.get("result_doc_id"),
+            "chunk_count": result.get("chunk_count"),
+            "error": result.get("error"),
+        }
+        loop.run_until_complete(dispatch_webhook(url, payload, tenant_id))
+    except Exception as e:  # noqa: BLE001 - webhook must never affect the job outcome
+        log.warning("ingest_webhook_failed", extra={"job_id": job_id, "error_type": type(e).__name__})
 
 
 def submit(job_id: str, tenant_id: str, kind: str, payload: dict, metadata: dict | None = None) -> None:
-    _ensure_executor().submit(_run, job_id, tenant_id, kind, payload, metadata)
+    get_job_queue(runner_submit=_run).enqueue(job_id, tenant_id, kind, payload, metadata)
