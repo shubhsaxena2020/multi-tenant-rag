@@ -1777,7 +1777,7 @@ def _validate_webhook_url(url: str) -> None:
         validate_url_for_egress(url, allow_private=get_settings().webhook_allow_private, resolve=False)
     except ValueError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"webhook URL rejected (SSRF guard): {e}",
         ) from e
 

@@ -33,3 +33,7 @@ htmlcov/
 *.bak[0-9]
 *.orig
 *.corrupted
+
+# delegate / scratch working dirs (never ship)
+reports/
+.rag-work/
