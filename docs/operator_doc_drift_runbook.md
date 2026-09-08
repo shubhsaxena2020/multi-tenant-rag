@@ -24,7 +24,7 @@ curl -s http://localhost:8000/health
 ### Step 3: Tenant create via Admin-Key
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/tenants" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"name": "drift-test-company", "plan": "standard"}'
 # Output: {"detail":"Admin key required"}  ❌ FAILS
@@ -52,17 +52,17 @@ curl -s "http://localhost:8000/api/v1/queries" \
 
 **The README "Run" workflow does not complete end-to-end because admin routes require ADMIN_API_KEY in .env, and the app container must load it via `env_file: - .env` in docker-compose.yml.**
 
-**Root cause**: The `docker compose.yml` includes `env_file: - .env` but the `.env` file on disk has `ADMIN_API_KEY=***` (placeholder) instead of `ADMIN_API_KEY=admin_master_key`. Without the correct admin key value configured, the `require_admin()` guard in `app/auth.py` returns 403 "Admin key required" for all admin routes (tenant create, key rotation, /audit, etc.).
+**Root cause**: The `docker compose.yml` includes `env_file: - .env` but the `.env` file on disk has `ADMIN_API_KEY=***` (placeholder) instead of `ADMIN_API_KEY=<your-admin-key>`. Without the correct admin key value configured, the `require_admin()` guard in `app/auth.py` returns 403 "Admin key required" for all admin routes (tenant create, key rotation, /audit, etc.).
 
-**This is the single worst confusion point**: operators follow the README "Run" steps (docker compose up, venv activate, pip install, uvicorn start), then are unable to create tenants or ingest data because admin routes return 403 with no indication that `.env` must contain the correct `ADMIN_API_KEY=admin_master_key` value and that docker compose must reload .env.
+**This is the single worst confusion point**: operators follow the README "Run" steps (docker compose up, venv activate, pip install, uvicorn start), then are unable to create tenants or ingest data because admin routes return 403 with no indication that `.env` must contain the correct `ADMIN_API_KEY=<your-admin-key>` value and that docker compose must reload .env.
 
 ## Correction — Fix the Confusing Instruction
 
 **Add this caveat to `README.md` after the "Run" section:**
 
 ```
-# Admin key required for admin routes. Set ADMIN_API_KEY=admin_master_key in .env
-# before first start. The Admin-Key header (e.g. Admin-Key: admin_master_key) is needed
+# Admin key required for admin routes. Set ADMIN_API_KEY=<your-admin-key> in .env
+# before first start. The Admin-Key header (e.g. Admin-Key: <your-admin-key>) is needed
 # for tenant create, key rotation, and other admin operations. Without it, those routes
 # return 403. Ensure docker compose loads .env: the compose file includes
 # `env_file: - .env` so .env values load into the app container. If ADMIN_API_KEY is
@@ -78,7 +78,7 @@ After adding the admin key caveat and ensuring `docker compose.yml` includes `en
 2. `uv venv && . .venv/bin/activate` — creates and activates project venv ✅
 3. `uv pip install -e .` — installs package in editable mode ✅
 4. `uvicorn app.main:app --port 8000` — starts the service ✅
-5. Admin routes (tenant create, etc.) work with `Admin-Key: admin_master_key` ✅
+5. Admin routes (tenant create, etc.) work with `Admin-Key: <your-admin-key>` ✅
 6. User queries work with `Authorization: Bearer <valid-token>` ✅
 
 **All steps verified against localhost:8000 after .env correction and docker compose restart.**

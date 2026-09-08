@@ -74,7 +74,7 @@ independently:
   queue backend handles recovery. Run it manually or via a scheduled cron job:
 ```bash
 # Check for orphaned jobs (older than 5 minutes)
-export PATH="/home/ubuntu/rag-service/.venv/bin:$PATH"
+source .venv/bin/activate
 python3 -c "
 from app.queue import register_backend, get_backend, recover_orphans
 register_backend('inline')

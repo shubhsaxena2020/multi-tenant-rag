@@ -58,7 +58,7 @@ def _clear_settings_cache():
         # Teardown: remove the temporary database file and clear settings again.
         try:
             os.unlink(db_path)
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError):
             pass
         get_settings.cache_clear()
         reset_client()

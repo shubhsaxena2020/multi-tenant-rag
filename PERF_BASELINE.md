@@ -33,7 +33,7 @@
 
 **Command run**:
 ```
-k6 run -o json=/tmp/k6-results.json /home/ubuntu/rag-service/k6-query-script.js --no-thresholds
+k6 run -o json=/tmp/k6-results.json scripts/k6_load_test.js --no-thresholds
 ```
 
 ---

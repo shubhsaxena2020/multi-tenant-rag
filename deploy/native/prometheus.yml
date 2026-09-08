@@ -1,7 +1,7 @@
 # Native (non-Docker) Prometheus scrape + alerting config for the multi-tenant RAG service.
 # Mirror of deploy/prometheus.yml but using localhost (compose service names like
 # `app:`/`qdrant:` don't resolve when run natively). Bring up with:
-#   /home/ubuntu/monitoring/start_monitoring.sh
+#   deploy/native/start_monitoring.sh
 #
 # P0 goal: a dead Qdrant / dead app is detected within MINUTES. Prometheus scrapes both
 # the app /metrics and Qdrant's native :6333/metrics; alert.rules.yml fires QdrantDown /
@@ -13,7 +13,7 @@ global:
     cluster: "rag-vps"
 
 rule_files:
-  - /home/ubuntu/monitoring/alert.rules.yml
+  - alert.rules.yml
 
 alerting:
   alertmanagers:

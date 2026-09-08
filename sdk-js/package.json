@@ -1,5 +1,5 @@
 {
-  "name": "@hermes-rag/sdk",
+  "name": "rag-service-sdk",
   "version": "1.0.0",
   "description": "Official JavaScript/TypeScript SDK for the Hermes multi-tenant RAG service (widget + query + ingestion).",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/shubhsaxena2020/hermes-rag"
+    "url": "https://github.com/shubhsaxena2020/rag-service"
   },
   "engines": {
     "node": ">=18"

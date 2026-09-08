@@ -1,4 +1,4 @@
-# @hermes-rag/sdk
+# rag-service-sdk
 
 Official JavaScript / TypeScript SDK for the **Hermes multi-tenant RAG service**.
 
@@ -26,7 +26,7 @@ Then import the built output, or copy `src/index.ts` into your project.
 ## Usage
 
 ```ts
-import { RagClient } from "@hermes-rag/sdk";
+import { RagClient } from "rag-service-sdk";
 
 // Browser (publishable key) — safe to embed:
 const client = new RagClient({

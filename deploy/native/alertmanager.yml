@@ -1,6 +1,6 @@
 # Alertmanager config for NATIVE (non-Docker) deployment. Mirror of deploy/alertmanager.yml
 # but the webhook URL uses localhost (the `alert-webhook` compose service name doesn't
-# resolve natively). Bring up with /home/ubuntu/monitoring/start_monitoring.sh.
+# resolve natively). Bring up with deploy/native/start_monitoring.sh.
 global:
   resolve_timeout: 5m
 

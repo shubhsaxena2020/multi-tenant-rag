@@ -4,19 +4,19 @@
 
 ### Service Health
 ```bash
-curl -s -H "Admin-Key: admin_master_key" http://localhost:8000/health
+curl -s -H "Admin-Key: <your-admin-key>" http://localhost:8000/health
 # Expected: {"status":"ok","service":"rag-service","version":"1.0.0"}
 ```
 
 ### SLO Metrics
 ```bash
-curl -s -H "Admin-Key: admin_master_key" http://localhost:8000/health/slo
+curl -s -H "Admin-Key: <your-admin-key>" http://localhost:8000/health/slo
 # Expected: availability 0.9996
 ```
 
 ### Readiness
 ```bash
-curl -s -H "Admin-Key: admin_master_key" http://localhost:8000/health/liveness
+curl -s -H "Admin-Key: <your-admin-key>" http://localhost:8000/health/liveness
 # Expected: service is ready to serve requests
 ```
 
@@ -25,7 +25,7 @@ curl -s -H "Admin-Key: admin_master_key" http://localhost:8000/health/liveness
 ### Create a Tenant
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/tenants" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"name":"my-tenant"}'
 # Expected: 201 {"tenant_id":"my-tenant","name":"my-tenant","api_key":"rk_...","plan":"shared","created_at":"...","chunk_count":0}
@@ -34,7 +34,7 @@ curl -s -X POST "http://localhost:8000/api/v1/tenants" \
 ### Rotate/Create Secret Key
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/keys" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"prefix":"my-key"}'
 # Expected: 201 {"doc_id":"...","key":"rk_...","created_at":"..."}
@@ -66,7 +66,7 @@ curl -s -X POST "http://localhost:8000/api/v1/query" \
 ### Admin-Key on Query Endpoint
 ```bash
 curl -s -X POST "http://localhost:8000/api/v1/query" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"question":"test"}'
 # Expected: 403 {"detail":"Admin key required"}
