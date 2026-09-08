@@ -1,6 +1,6 @@
 """Embedding interface — hybrid (dense + sparse) capable.
 
-Design goals (2026 research, see RESEARCH-2026.md §3/§4):
+Design goals (hybrid retrieval & lazy-loaded embedding):
 - BGE-M3 emits DENSE + SPARSE + MULTI-VECTOR in one pass. We use dense (for ANN
   recall) and sparse (lexical/BM25-style) so retrieval can fuse them (RRF) for the
   +8–14 recall@10 hybrid lift (Agile Infoways 2026).

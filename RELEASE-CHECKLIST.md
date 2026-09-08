@@ -22,11 +22,11 @@
 ## 3. Smoke Tests (run with project venv)
 
 ```
-PATH="/home/ubuntu/rag-service/.venv/bin:$PATH"
+source .venv/bin/activate
 pytest tests/ -x --timeout=120  [at least 228/235 must pass]
 ```
 
-- [ ] `pytest` runs from project venv (not Hermes venv); SQLAlchemy available
+- [ ] `pytest` runs from project venv; SQLAlchemy available
 - [ ] Health check: `GET /health` → 200
 - [ ] Create tenant: `POST /api/v1/tenants` → 201
 - [ ] Ingest text: `POST /{tenant}/ingest/text` → job created, progress tracked
@@ -63,7 +63,6 @@ pytest tests/ -x --timeout=120  [at least 228/235 must pass]
 - [ ] All items above checked
 - [ ] Release tag created: `batch-1-phase2-quality-improvements` (or appropriate)
 - [ ] CHANGELOG.md entry added for the release
-- [ ] Fleet summary (`/home/ubuntu/.hermes/fleet-plan/fleet-summary.md`) updated if operator-visible behavior changed
 
 ---
 **Tag**: v17.04 (e6d5229)

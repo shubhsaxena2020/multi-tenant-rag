@@ -3,9 +3,9 @@
 # Launches Prometheus, Alertmanager, and the local alert webhook sink.
 # Idempotent: skips any component already listening on its port.
 set -u
-BASE=/home/ubuntu/monitoring
+BASE=${MONITORING_BASE:-./monitoring}
 BIN=$BASE/bin
-REPO=/home/ubuntu/rag-service
+REPO=${RAG_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 LOG=$BASE/log
 mkdir -p "$LOG"
 

@@ -1,105 +1,93 @@
-# RAG Service — Multi-Tenant Retrieval-Augmented Generation
+# RAG Service — a self-hostable multi-tenant RAG template
 
-General-purpose, multi-tenant RAG platform to power multiple independent client-site
-chatbots from one self-hosted deployment. Built for production from day one: hard
-per-tenant data isolation, a real programmatic ingestion API with async job tracking, a
-documented versioned query API, hybrid (dense+sparse) retrieval with cross-encoder
-reranking, encryption-at-rest, document-level RBAC, per-tenant quotas, key rotation, an
-offline eval harness, rate limiting and Prometheus observability.
+Clone this repo, run one command, and you have a production-shaped **multi-tenant
+Retrieval-Augmented Generation** service for your own project. Everything runs from this
+repo — the only thing you install is Docker.
 
-Status: **v3** — industrial feature set implemented and verified (20 passing tests
-against a live Qdrant container + live runtime smoke). Real embedding/reranking models
-are wired but run behind env flags (defaults to deterministic models so the service
-boots with zero model downloads).
+```bash
+git clone <this-repo> rag-service && cd rag-service && ./setup.sh
+```
+
+`setup.sh` generates secrets, starts the stack, waits for health, and creates your first
+tenant. Full walkthrough — for a human or an AI agent — in **[SETUP.md](SETUP.md)**.
+
+> **What this is:** a template you stand up per project. Many isolated tenants
+> (API namespaces), per-tenant keys / quotas / Qdrant collections, document-level RBAC,
+> encryption-at-rest, hybrid retrieval + rerank, async ingestion, an eval harness, and a
+> Prometheus/Grafana stack.
+>
+> **What it isn't:** a hosted SaaS you operate for external customers. No signup portal,
+> no billing, no per-user password store. "Tenants" are namespaces you create with your
+> own admin key.
+
+The service boots with **deterministic placeholder models** by default — the full hybrid
+retrieval + rerank pipeline runs with zero model downloads, so it starts in seconds and
+the test suite passes offline. Flip `USE_REAL_EMBEDDER=1` / `USE_REAL_RERANKER=1` when
+you're ready for real weights.
+
+---
 
 ## Architecture decisions (with tradeoffs + citations)
-See `ISOLATION.md` (tenant isolation: silo vs pool) and
-`../.hermes/notes/RAG Service/DESIGN-TRADEOFFS.md` + `RESEARCH-2026.md` (vector DB /
-embedding / chunking / reranking / isolation / architecture, each with dated 2026
-sources).
 
-- **Vector store:** Qdrant. Each tenant gets its own collection (structural
-  isolation). Capable of 100M+ vectors, distributed, native hybrid (dense + sparse
-  vectors). Benchmarked 4 ms p50 / 25 ms p99 (salttechno 2026).
-- **Embedding:** BGE-M3 (multilingual, 1024-dim dense + sparse in one pass, MIT,
-  CPU-friendly). Set `USE_REAL_EMBEDDER=1` to load it; defaults to a deterministic
-  embedder for tests. Optional TEI URL (`EMBED_BASE_URL`) offloads to a GPU node.
-- **Chunking:** recursive token splitter, ~512 tokens / 64 overlap (validated 2026
-  benchmark band: 69% accuracy vs 54% semantic).
-- **Retrieval:** hybrid dense + sparse (BGE-M3) → Reciprocal Rank Fusion (RRF) →
-  cross-encoder rerank. RRF hybrid lift ≈ +8–14 recall@10 (Agile Infoways 2026).
-- **Reranking:** BGE-Reranker-v2-m3 cross-encoder (two-stage recall→rerank, default ON).
-  Set `USE_REAL_RERANKER=1`.
-- **Encryption-at-rest:** AES-GCM envelope, per-tenant key derived from a master key
-  (KMS-style). Set `MASTER_ENCRYPTION_KEY`; chunk text is sealed in Qdrant, never
-  plaintext.
+See `ISOLATION.md` (tenant isolation: silo vs pool) and `DESIGN-TRADEOFFS.md` (vector DB /
+embedding / chunking / reranking / isolation / architecture, each with dated 2026 sources).
+
+- **Vector store:** Qdrant. Each tenant gets its own collection (structural isolation).
+  100M+ vectors, distributed, native hybrid (dense + sparse) vectors.
+- **Embedding:** dense + sparse in one pass (default `intfloat/multilingual-e5-large`
+  1024-dim + SPLADE sparse; set `EMBED_MODEL=BAAI/bge-m3` +
+  `EMBED_PROVIDER=sentence_transformers` for full BGE-M3). `USE_REAL_EMBEDDER=1` loads
+  real weights; a deterministic embedder is the default. `EMBED_BASE_URL` offloads
+  embedding to a TEI GPU node.
+- **Chunking:** recursive token splitter, ~512 tokens / 64 overlap.
+- **Retrieval:** hybrid dense + sparse → Reciprocal Rank Fusion (RRF) → cross-encoder
+  rerank. RRF hybrid lift ≈ +8–14 recall@10 (Agile Infoways 2026).
+- **Reranking:** BGE-Reranker-v2-m3 cross-encoder (two-stage recall→rerank, default ON;
+  `USE_REAL_RERANKER=1`).
+- **Encryption-at-rest:** AES-GCM envelope, per-tenant key derived from
+  `MASTER_ENCRYPTION_KEY` (KMS-style). Chunk text is sealed in Qdrant, never plaintext.
 - **Document-level RBAC:** optional per-tenant sub-user groups. Chunks carry an `acl`;
   queries pass a group filter applied at the Qdrant layer (cannot be bypassed).
-- **Tenant registry:** SQLite (Postgres-ready interface); multiple rotatable hashed API
-  keys per tenant; per-tenant chunk quota for fleet protection.
-- **Ingestion jobs:** sqlite-backed, threadpool runner, pollable status.
+- **Tenant registry:** async SQLAlchemy — SQLite for dev/CI, Postgres-ready interface.
+  Multiple rotatable hashed keys per tenant; publishable (`pk_`) vs secret (`rk_`) tiers;
+  optional key expiry; per-tenant chunk quota.
+- **Ingestion jobs:** DB-backed store + threadpool runner + pollable status; optional
+  Redis job-distribution backend for horizontal workers (`JOB_QUEUE_BACKEND=redis`).
+- **Outbound webhooks:** optional per-tenant HMAC-signed callbacks for lead capture and
+  job completion (SSRF-guarded egress).
 
 ## Isolation guarantee
+
 Tenant identity is derived **server-side from the Bearer API key** on every request; the
 `{tenant}` path segment is informational. All vector operations are scoped to the
 tenant's own Qdrant collection, so cross-tenant reads are impossible at the storage
 layer — the guarantee holds even under application bugs. Offboarding drops the tenant's
-collection entirely. Document-level RBAC is layered *on top* of this silo, applied at
-the database filter layer.
+collection entirely. Document-level RBAC is layered *on top* of this silo, applied at the
+database filter layer.
 
-## Run
+## Quick start (details in SETUP.md)
+
 ```bash
-docker compose up -d            # starts Qdrant (+ optional Redis) on :6333
-uv venv && . .venv/bin/activate
-uv pip install -e .
-uvicorn app.main:app --port 8000
+./setup.sh                       # docker + .env + compose up + first tenant
+# or by hand:
+cp .env.example .env             # then set ADMIN_API_KEY + MASTER_ENCRYPTION_KEY
+docker compose up -d             # Qdrant + app on :6333 / :8000
+curl -s localhost:8000/health    # {"status":"ok"}
 ```
-# Admin key required for admin routes. Set `ADMIN_API_KEY=***` in `.env` before first start.
-# The `Admin-Key` header (e.g. `Admin-Key: admin_master_key`) is needed for tenant create,
-# key rotation, and other admin operations. Without it, those routes return 403.
-# Ensure `docker compose.yml` includes `env_file: - .env` so .env values load into the app container.
-Config via env (see `.env.example`): `QDRANT_URL`, `DB_URL`, `ADMIN_API_KEY`,
-`MASTER_ENCRYPTION_KEY`, `USE_REAL_EMBEDDER`, `USE_REAL_RERANKER`, `EMBED_MODEL`,
-`EMBED_BASE_URL` (TEI), `RERANK_MODEL`, `TENANT_CHUNK_QUOTA`,
-`RATE_*_PER_MIN`, `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` (optional answer generation).
 
-# Admin key setup
-# Set `ADMIN_API_KEY=***` in `.env` before first start.
-# The `Admin-Key` header (e.g. `Admin-Key: admin_master_key`) is required for
-# tenant create, key rotation, and all other admin routes. Without it, those
-# routes return 403 "Admin key required". Admin audit endpoints (`/audit`
-# `/audit/verify`) also fail-closed without the Admin-Key.
+Key config (full list in `.env.example`, definitions in `app/config.py`):
+`ADMIN_API_KEY` (gates tenant admin routes), `MASTER_ENCRYPTION_KEY` (encryption-at-rest),
+`USE_REAL_EMBEDDER` / `USE_REAL_RERANKER`, `EMBED_MODEL` / `EMBED_BASE_URL`, `RERANK_MODEL`,
+`TENANT_CHUNK_QUOTA`, `RATE_*_PER_MIN`, `REDIS_URL`, `LLM_BASE_URL` / `LLM_API_KEY` /
+`LLM_MODEL` (optional answer generation).
 
-## Dirty Tree & Secrets Handling
-This section explains why certain files must never be committed to version control:
-
-### `.env.fixed`
-- **What it is**: A reference copy of the `.env` file containing the correct `ADMIN_API_KEY=admin_master_key` value
-- **Why it must NOT be committed**: The `.env.fixed` file contains real credentials. If committed, anyone with repo access would have the admin master key, compromising all admin operations (tenant create, key rotation, revocation)
-- **Disposition**: Listed in `.gitignore` with the directive `.env.fixed` — never track this file in git
-- **Usage**: Kept locally as a reference for operators; value must be manually entered into `.env` before `docker compose up`
-
-### Backup Files
-- **What they contain**: SQLite database dumps, Qdrant snapshots, encryption key manifests
-- **Why they must NOT be committed**: Backup files may contain unencrypted tenant data, historical tenant records, and full dataset snapshots. Committing these would expose PII, violate data retention policies, and bloat the repository
-- **Disposition**: Listed in `.gitignore` with patterns `backups/`, `*.db`, `*.sql`, `nightly_*.log` — never track backup artifacts in git
-- **Storage**: Backups stored in `/home/ubuntu/monitoring/backups/` (local) and optionally `/mnt/offsite/rag-backups/` (offsite), never in the repo
-
-### General Rule
-- Any file matching `.env*`, `*backup*`, or `*keyring*` patterns must be verified absent from `git status` before committing
-- The `.env` file itself contains `ADMIN_API_KEY=***` placeholder by default and must be overridden at deployment time with the real value via a secrets manager or local `.env` override
-- Backup artifacts are generated by `deploy/native/nightly_backs.sh` and are intentional outputs, not source code
-
-Health: `GET /health`, `GET /health/ready`. Metrics: `GET /metrics` (Prometheus).
-Interactive contract: `GET /api/v1/docs` (Swagger). Schema: `GET /api/v1/openapi.json`.
-Admin audit trail: `GET /audit` (read, hash-chained) + `GET /audit/verify` (chain-integrity
-proof) — both gated behind `Admin-Key`, fail-closed.
+Surfaces: `/api/v1/docs` (Swagger), `/demo`, `/admin/console`, `/metrics`, `/widget.js`.
 
 ## API (v1, base path `/api/v1`)
 
-All tenant routes require `Authorization: Bearer <tenant_api_key>`.
-Admin routes (`POST/GET/DELETE /tenants`) require `Admin-Key: <admin_api_key>` when
-`ADMIN_API_KEY` is set (open otherwise).
+Tenant routes require `Authorization: Bearer <tenant_api_key>`. Admin routes
+(`POST/GET/DELETE /tenants`, `/admin/*`, `/audit*`) require `Admin-Key: <admin_api_key>`
+when `ADMIN_API_KEY` is set (open otherwise) and **fail closed** without it.
 
 ### Tenants (admin)
 - `POST /api/v1/tenants` → `{tenant_id, name, api_key, plan, created_at, chunk_count}` (201)
@@ -107,59 +95,82 @@ Admin routes (`POST/GET/DELETE /tenants`) require `Admin-Key: <admin_api_key>` w
 - `DELETE /api/v1/tenants/{tenant_id}` → offboard (drops collection + registry) (200)
 
 ### API keys (tenant-scoped)
-- `POST /api/v1/{tenant}/keys` → issue a new key (old key stays valid) (201)
-- `GET /api/v1/{tenant}/keys` → list key prefixes + revoked state (200)
-- `DELETE /api/v1/{tenant}/keys/{prefix}` → revoke a key (last valid key protected) (200)
+- `POST /api/v1/{tenant}/keys` / `.../keys/secret` → issue a secret `rk_` key (old stays valid)
+- `POST /api/v1/{tenant}/keys/publishable` → issue a read-only `pk_` key for the widget
+- `GET /api/v1/{tenant}/keys` → list key prefixes + revoked state
+- `DELETE /api/v1/{tenant}/keys/{prefix}` → revoke (last valid key protected)
+- `PATCH /api/v1/{tenant}/keys/{prefix}/expiry` → time-box a key
 
 ### Ingestion
-- `POST /api/v1/{tenant}/documents` (text) → sync, `{doc_id, chunk_count}` (201)
-- `POST /api/v1/{tenant}/ingest/url` → sync fetch+ingest (201)
-- `POST /api/v1/{tenant}/ingest/jobs` → **async** `{kind, text|url|content, content_type,
-  metadata, acl?}`; returns `{job_id, status: pending}` (202)
-- `GET /api/v1/{tenant}/jobs/{job_id}` → `{status, progress, total_chunks, done_chunks,
-  result_doc_id, error}` (200/404)
-- `GET /api/v1/{tenant}/jobs` → recent jobs (200)
-- `DELETE /api/v1/{tenant}/jobs/{job_id}` → remove job record (200/404)
-- `DELETE /api/v1/{tenant}/documents/{doc_id}` → delete a document (200)
-- Optional `acl: [group, ...]` on any ingest body mirrors source ACL into chunk metadata.
+- `POST /api/v1/{tenant}/ingest/text` — sync, `{doc_id, chunk_count}` (201)
+- `POST /api/v1/{tenant}/ingest/url` — SSRF-checked fetch + ingest (201)
+- `POST /api/v1/{tenant}/documents/upload` — multipart file (pdf/docx/md/txt/code)
+- `POST /api/v1/{tenant}/ingest/jobs` — **async** `{job_id, status: pending}` (202)
+- `GET /api/v1/{tenant}/jobs` / `.../jobs/{job_id}` — list / poll `{status, progress, …}`
+- `DELETE /api/v1/{tenant}/jobs/{job_id}` — remove job record
+- `POST /api/v1/{tenant}/ingest/sitemap` — crawl a sitemap.xml (async)
+- `GET /api/v1/{tenant}/documents` — paginated catalog · `GET/DELETE .../documents/{doc_id}`
+- Optional `acl: [group, …]` on any ingest body mirrors source ACL into chunk metadata.
 
 ### Query
 - `POST /api/v1/{tenant}/query` → `{question, top_k, candidate_k, rerank, generate, acl?}`
-  → `{results:[{chunk_id, doc_id, title, text, score, metadata}], answer, tenant_id}`
-  - `acl: [group, ...]` restricts retrieval to chunks whose `acl` intersects those
-    groups (document-level RBAC at the DB layer).
-  - `generate=true` returns a generated answer grounded in `results` (if an LLM
-    provider is configured; otherwise an extractive answer from the top chunk).
+  → `{results:[{chunk_id, doc_id, title, text, score, metadata}], answer, tenant_id,
+  faithfulness, answerable, out_of_scope}`
+  - `acl: [group, …]` restricts retrieval to chunks whose `acl` intersects those groups.
+  - `generate=true` returns an LLM answer grounded in `results` (if `LLM_*` set), else an
+    extractive answer from the top chunk.
+- `POST /api/v1/{tenant}/query/stream` — SSE streaming variant.
 
 ### Evaluation (offline, no prod traffic)
-- `PUT /api/v1/{tenant}/eval/set` → store a golden set `{items:[{question,
-  relevant_doc_ids?, relevant_texts?, expected_answer?}]}` (200)
+- `PUT /api/v1/{tenant}/eval/set` → store a golden set
 - `POST /api/v1/{tenant}/eval/run` → `{questions, hit_rate, mrr, ndcg, context_recall,
-  avg_latency_ms}` (200)
+  avg_latency_ms}`
+
+### Widget / branding / business
+`GET /{tenant}/widget/config`, `GET /{tenant}/session/{session_id}` (multi-turn history),
+`PATCH /{tenant}/branding`, `PATCH /{tenant}/system-prompt`, `PATCH /{tenant}/webhooks`,
+`GET /api/v1/{tenant}/usage`, `POST /api/v1/{tenant}/feedback`, `POST /api/v1/{tenant}/handoff`.
 
 ## Rate limiting, quotas & observability
-- Per-IP and per-tenant token-bucket limits (configurable `RATE_*_PER_MIN`). Exceeded →
-  `429` with `Retry-After`. Ingestion jobs have a separate worker-pool cap.
-- Per-tenant **chunk quota** (`TENANT_CHUNK_QUOTA`): ingestion past the cap → `429`
-  with quota headers. Fleet protection so one tenant can't starve the cluster.
-- Structured JSON logs on every ingestion/query/offboard/key event (tenant_id-tagged).
-- Prometheus metrics at `/metrics`: request count/latency, ingest jobs (by status),
-  ingest chunks, retrieval latency, query hit count — all tenant-labelled.
+
+- Per-IP and per-tenant token-bucket limits (`RATE_*_PER_MIN`). Exceeded → `429` +
+  `Retry-After`. Ingestion jobs have a separate cap. Set `REDIS_URL` (and start
+  `--with-redis`) to share one budget across replicas.
+- Per-tenant **chunk quota** (`TENANT_CHUNK_QUOTA`): ingestion past the cap → `429` with
+  quota headers, so one tenant can't exhaust shared storage.
+- Structured JSON logs on every ingest / query / offboard / key event (tenant-tagged).
+- Prometheus metrics at `/metrics`: request count/latency, ingest jobs by status, ingest
+  chunks, retrieval latency, query hit count, no-answer rate, faithfulness histogram —
+  all tenant-labelled. Grafana dashboards under `deploy/grafana/`.
+- Tamper-evident audit log: `GET /audit` (hash-chained) + `GET /audit/verify`.
 
 ## Validation
-- Max 1,000,000 chars per document; content_type ∈ {text, markdown, html, code};
-  metadata JSON ≤ 32 KB. Violations → 422.
+
+Max 1,000,000 chars per document; `content_type ∈ {text, markdown, html, code}`;
+metadata JSON ≤ 32 KB. Violations → `422`.
 
 ## Tests
-`pytest tests/` (needs Qdrant on `:6333`). Covers: hybrid retrieval wiring, hard tenant
-isolation (a tenant's secret never appears in another tenant's query), encryption-at-
-rest (raw Qdrant payload is ciphertext), document-level RBAC, async job lifecycle +
-job isolation, API-key rotation + revocation, tenant chunk quota, offline eval,
-validation, answer generation, offboarding, admin gating, rate limiting, metrics, and
-the versioned OpenAPI contract. Deterministic models in tests (`USE_REAL_EMBEDDER=0
-USE_REAL_RERANKER=0`) so the full hybrid pipeline is verified with zero downloads.
+
+```bash
+docker compose exec app python -m pytest -q      # or: pip install -e ".[test]" && pytest -q
+```
+Deterministic models in tests (`USE_REAL_EMBEDDER=0 USE_REAL_RERANKER=0`), so the full
+hybrid pipeline — chunk → embed → Qdrant dense+sparse → RRF → rerank → RBAC filter — is
+verified with zero downloads and no external services for most of the suite. Covers hard
+tenant isolation, encryption-at-rest (raw payload is ciphertext), RBAC, async job
+lifecycle + isolation, key rotation/revocation/expiry, quotas, offline eval, SSRF guard,
+webhooks, admin gating, rate limiting, metrics, and the versioned OpenAPI contract.
 
 ## Scaling path
+
 Qdrant cluster (sharding + replicas) + stateless app replicas behind a load balancer +
-Redis-backed rate limiter (multi-instance) + TEI GPU node for embedding + K8s/HPA. See
-`DEPLOYMENT.md`.
+`JOB_QUEUE_BACKEND=redis` for horizontal ingestion workers + Redis-backed rate limiter +
+TEI GPU node for embedding + K8s/HPA. See `DEPLOYMENT.md`.
+
+## Repository layout
+
+`app/` — the service (`main.py` routes, `config.py` every setting, `vector_store.py`
+Qdrant silo, `crypto.py` encryption, `rbac.py`, `ingestion/`, `retrieval/`, `webhook.py`,
+`job_queue.py`). `tests/` — the suite. `deploy/` — Prometheus/Alertmanager/Grafana.
+`docs/` — operator runbooks. `sdk.py` / `sdk-js/` — Python & TypeScript clients.
+`setup.sh` / `SETUP.md` — the clone-and-go path.

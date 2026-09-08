@@ -1,0 +1,3 @@
+# Shell scripts must stay LF so they run on Linux/macOS after a Windows checkout.
+*.sh text eol=lf
+setup.sh text eol=lf

@@ -161,20 +161,20 @@ If restore fails mid-way:
 
 ```bash
 # List existing snapshots
-ls /home/ubuntu/rag-service/qdrant_storage/snapshots/
+ls ./qdrant_storage/snapshots/
 
 # Prune snapshots older than 30 days (keep last 5)
-find /home/ubuntu/rag-service/qdrant_storage/snapshots/ -name "*.snapshot" -mtime +30 | head -n +6 | xargs rm -f
+find ./qdrant_storage/snapshots/ -name "*.snapshot" -mtime +30 | head -n +6 | xargs rm -f
 
 # Or keep N most recent
-ls -t /home/ubuntu/rag-service/qdrant_storage/snapshots/*.snapshot | tail -n +6 | xargs rm -f
+ls -t ./qdrant_storage/snapshots/*.snapshot | tail -n +6 | xargs rm -f
 ```
 
 ### 4.1 Retention Policy
 
 - **Keep**: Last 5 snapshots OR 30 days (whichever is longer)
 - **Prune**: Anything older than 30 days beyond the 5 most recent
-- **Verify**: `stat -c "%y %n" /home/ubuntu/rag-service/qdrant_storage/snapshots/*` before/after
+- **Verify**: `stat -c "%y %n" ./qdrant_storage/snapshots/*` before/after
 
 ---
 

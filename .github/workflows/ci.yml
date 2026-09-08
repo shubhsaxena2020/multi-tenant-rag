@@ -13,8 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      PYTHONPATH: "/home/ubuntu/rag-service:${PYTHONPATH}"
-      PATH: "/home/ubuntu/rag-service/.venv/bin:$PATH"
+      PYTHONPATH: "${{ github.workspace }}:${PYTHONPATH}"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

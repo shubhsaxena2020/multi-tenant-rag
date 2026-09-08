@@ -30,7 +30,7 @@ curl -s http://localhost:8000/health/deps
 
 === Step 3: Tenant create via Admin-Key ===
 curl -s -X POST "http://localhost:8000/api/v1/tenants" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"name": "drift-replay-company", "plan": "standard"}'
 # Output: {"detail":"Admin key required"}  ❌ FAILS
@@ -54,7 +54,7 @@ curl -s "http://localhost:8000/api/v1/queries" \
 
 **The README "Run" workflow does not complete end-to-end because the Admin-Key header fails.**
 
-**Root cause**: The `docker compose.yml` includes `env_file: - .env`, but the `.env` values (including `ADMIN_API_KEY=admin_master_key`) are not being loaded into the app container in the current runtime environment. Without `ADMIN_API_KEY` configured, the `require_admin()` guard in `app/auth.py` returns 403 "Admin key required" for all admin routes.
+**Root cause**: The `docker compose.yml` includes `env_file: - .env`, but the `.env` values (including `ADMIN_API_KEY=<your-admin-key>`) are not being loaded into the app container in the current runtime environment. Without `ADMIN_API_KEY` configured, the `require_admin()` guard in `app/auth.py` returns 403 "Admin key required" for all admin routes.
 
 **This is the single worst confusion point**: operators follow the README "Run" steps, then are unable to create tenants or ingest data because admin routes return 403 without any indication that `ADMIN_API_KEY` must be set in `.env` and available to the app container.
 
@@ -64,7 +64,7 @@ curl -s "http://localhost:8000/api/v1/queries" \
 
 ```
 # Admin key required for admin routes. Set ADMIN_API_KEY=*** in .env before first start.
-# The Admin-Key header (e.g. Admin-Key: admin_master_key) is needed for tenant create,
+# The Admin-Key header (e.g. Admin-Key: <your-admin-key>) is needed for tenant create,
 # key rotation, and other admin operations. Without it, those routes return 403.
 # Ensure docker compose loads .env: the compose file includes `env_file: - .env` so .env
 # values load into the app container. If ADMIN_API_KEY is not set, admin routes will return
@@ -79,7 +79,7 @@ After adding the admin key caveat and ensuring `docker compose.yml` includes `en
 2. `uv venv && . .venv/bin/activate` — creates and activates project venv
 3. `uv pip install -e .` — installs package in editable mode
 4. `uvicorn app.main:app --port 8000` — starts the service
-5. `Admin-Key: admin_master_key` header — admin routes now return 200 instead of 403
+5. `Admin-Key: <your-admin-key>` header — admin routes now return 200 instead of 403
 6. Tenant create → 201 Created — end-to-end workflow functional
 7. Ingest text → documented success
 8. First query → documented success
@@ -89,7 +89,7 @@ After adding the admin key caveat and ensuring `docker compose.yml` includes `en
 ```
 === Step 3 (after fix): Tenant create via Admin-Key ===
 curl -s -X POST "http://localhost:8000/api/v1/tenants" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <your-admin-key>" \
   -H "Content-Type: application/json" \
   -d '{"name": "drift-replay-company", "plan": "standard"}'
 # Output: {"tenant_id":"t_abc123...", "name":"drift-replay-company", "api_key":"...", "plan":"standard", "created_at":"2026-..."}  ✅ SUCCESS

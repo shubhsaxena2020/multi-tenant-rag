@@ -12,7 +12,7 @@ This runbook documents the symptoms, checks, restart procedure, and verification
 - Query routes (`POST /api/v1/{tenant}/query`) may still work with user API keys
 
 ## Root Cause
-The `.env` file in the rag-service directory has `ADMIN_API_KEY=***` (placeholder) instead of the real value `admin_master_key`. The `require_admin()` guard in `app/auth.py` checks `provided != settings.admin_api_key`, and when they don't match, it returns 403.
+The `.env` file in the rag-service directory has `ADMIN_API_KEY=***` (placeholder) instead of the real value `<your-admin-key>`. The `require_admin()` guard in `app/auth.py` checks `provided != settings.admin_api_key`, and when they don't match, it returns 403.
 
 ## Checks
 
@@ -20,7 +20,7 @@ The `.env` file in the rag-service directory has `ADMIN_API_KEY=***` (placeholde
 ```bash
 cat .env | grep ADMIN_API_KEY
 ```
-**Expected output**: `ADMIN_API_KEY=admin_master_key`
+**Expected output**: `ADMIN_API_KEY=<your-admin-key>`
 
 **Stale/broken output**: `ADMIN_API_KEY=***` or the line is missing/empty
 
@@ -28,7 +28,7 @@ cat .env | grep ADMIN_API_KEY
 ```bash
 docker compose exec app env | grep ADMIN_API_KEY
 ```
-**Expected output**: `ADMIN_API_KEY=admin_master_key`
+**Expected output**: `ADMIN_API_KEY=<your-admin-key>`
 
 ### 3. Verify docker-compose.yml references the .env file
 ```bash
@@ -44,7 +44,7 @@ curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer r
 
 ### 5. Test admin route WITH correct Admin-Key header (should succeed)
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_test" -H "Admin-Key: admin_master_key" -H "Content-Type: application/json" -d '{"name":"test"}'
+curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_test" -H "Admin-Key: <your-admin-key>" -H "Content-Type: application/json" -d '{"name":"test"}'
 ```
 **Expected output**: `{"tenant_id":"...","name":"test","api_key":"...","plan":"shared","created_at":"...","chunk_count":0}`
 
@@ -54,43 +54,43 @@ curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer r
 Replace the placeholder value with the real admin key:
 ```bash
 # If using sed (careful with special characters)
-sed -i 's/ADMIN_API_KEY=***$/ADMIN_API_KEY=admin_master_key/' .env
+sed -i 's/ADMIN_API_KEY=***$/ADMIN_API_KEY=<your-admin-key>/' .env
 
 # Or simply edit the file directly
 # Ensure the .env file contains:
-ADMIN_API_KEY=admin_master_key
+ADMIN_API_KEY=<your-admin-key>
 ```
 
 ### Step 2: Restart the app service
 ```bash
 docker compose restart app
 ```
-**Expected**: The app container reloads the `.env` file on restart and `settings.admin_api_key` becomes `admin_master_key`.
+**Expected**: The app container reloads the `.env` file on restart and `settings.admin_api_key` becomes `<your-admin-key>`.
 
 ### Step 3: Verify the fix
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_test" -H "Admin-Key: admin_master_key" -H "Content-Type: application/json" -d '{"name":"verify"}'
+curl -s -X POST http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_test" -H "Admin-Key: <your-admin-key>" -H "Content-Type: application/json" -d '{"name":"verify"}'
 ```
 **Expected output**: `{"tenant_id":"...","name":"verify","api_key":"...","plan":"shared","created_at":"...","chunk_count":0}`
 
 ### Step 4: Verify all admin routes work
 ```bash
 # Create a key
-curl -s -X POST http://localhost:8000/api/v1/verify-tenant/keys -H "Authorization: Bearer rk_verify" -H "Admin-Key: admin_master_key" -H "Content-Type: application/json" -d '{"prefix":"verify"}'
+curl -s -X POST http://localhost:8000/api/v1/verify-tenant/keys -H "Authorization: Bearer rk_verify" -H "Admin-Key: <your-admin-key>" -H "Content-Type: application/json" -d '{"prefix":"verify"}'
 
 # List tenants
-curl -s http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_verify" -H "Admin-Key: admin_master_key"
+curl -s http://localhost:8000/api/v1/tenants -H "Authorization: Bearer rk_verify" -H "Admin-Key: <your-admin-key>"
 
 # Delete a tenant (if you created one)
-curl -s -X DELETE http://localhost:8000/api/v1/tenants/verify-tenant -H "Authorization: Bearer rk_verify" -H "Admin-Key: admin_master_key"
+curl -s -X DELETE http://localhost:8000/api/v1/tenants/verify-tenant -H "Authorization: Bearer rk_verify" -H "Admin-Key: <your-admin-key>"
 ```
 
 ## Verification Checklist
-- [ ] `.env` file has `ADMIN_API_KEY=admin_master_key` (not `***`)
-- [ ] `docker compose exec app env | grep ADMIN_API_KEY` returns `admin_master_key`
-- [ ] `POST /api/v1/tenants` with `Admin-Key: admin_master_key` returns 201
-- [ ] `POST /api/v1/{tenant}/keys` with `Admin-Key: admin_master_key` returns 201
-- [ ] `DELETE /api/v1/{tenant}/keys/{prefix}` with `Admin-Key: admin_master_key` returns 200
+- [ ] `.env` file has `ADMIN_API_KEY=<your-admin-key>` (not `***`)
+- [ ] `docker compose exec app env | grep ADMIN_API_KEY` returns `<your-admin-key>`
+- [ ] `POST /api/v1/tenants` with `Admin-Key: <your-admin-key>` returns 201
+- [ ] `POST /api/v1/{tenant}/keys` with `Admin-Key: <your-admin-key>` returns 201
+- [ ] `DELETE /api/v1/{tenant}/keys/{prefix}` with `Admin-Key: <your-admin-key>` returns 200
 - [ ] Health endpoint `/health` still returns 200
 - [ ] SLO endpoint `/health/slo` still returns availability_met: true
 - [ ] Query endpoint still works with user API keys

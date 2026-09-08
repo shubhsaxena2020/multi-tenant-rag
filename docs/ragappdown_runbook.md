@@ -1,7 +1,7 @@
 # Runbook: RAG Service Admin Key Configuration (RAGAppDown / Service-Down Case)
 
 ## Overview
-This runbook documents the failure mode where admin routes return `403 "Admin key required"` because the `.env` file has a placeholder `ADMIN_API_KEY` value instead of the real `admin_master_key`. When `ADMIN_API_KEY` is not configured correctly, all admin operations (tenant create, key rotation, revocation, offboard) fail-closed.
+This runbook documents the failure mode where admin routes return `403 "Admin key required"` because the `.env` file has a placeholder `ADMIN_API_KEY` value instead of the real `<YOUR_ADMIN_KEY>`. When `ADMIN_API_KEY` is not configured correctly, all admin operations (tenant create, key rotation, revocation, offboard) fail-closed.
 
 ## Symptoms
 - `POST /api/v1/tenants` returns `403 {"detail":"Admin key required"}` even with valid `Admin-Key` header
@@ -11,31 +11,31 @@ This runbook documents the failure mode where admin routes return `403 "Admin ke
 - All audit routes (`/audit`, `/audit/verify`) fail-closed without the Admin-Key
 
 ## Root Cause
-The `.env` file contains `ADMIN_API_KEY=***` (placeholder) instead of `ADMIN_API_KEY=admin_master_key`. The service's `require_admin()` guard in `app/auth.py` checks `settings.admin_api_key` against the provided `Admin-Key` header value. Without a matching value, all admin routes return 403.
+The `.env` file contains `ADMIN_API_KEY=***` (placeholder) instead of `ADMIN_API_KEY=<YOUR_ADMIN_KEY>`. The service's `require_admin()` guard in `app/auth.py` checks `settings.admin_api_key` against the provided `Admin-Key` header value. Without a matching value, all admin routes return 403.
 
 ## Fix: Update `.env` with correct `ADMIN_API_KEY`
 
 ### Step 1: Verify current `.env` value
 ```bash
-cat /home/ubuntu/rag-service/.env | grep ADMIN_API_KEY
+cat .env | grep ADMIN_API_KEY
 ```
 **Expected output**: `ADMIN_API_KEY=***`
 
 ### Step 2: Fix the `.env` file
 Replace the placeholder with the real admin master key:
 ```bash
-sed -i 's/^ADMIN_API_KEY=.*$/ADMIN_API_KEY=admin_master_key/' /home/ubuntu/rag-service/.env
+sed -i 's/^ADMIN_API_KEY=.*$/ADMIN_API_KEY=<YOUR_ADMIN_KEY>/' .env
 ```
 
 ### Step 3: Verify the fix
 ```bash
-cat /home/ubuntu/rag-service/.env | grep ADMIN_API_KEY
+cat .env | grep ADMIN_API_KEY
 ```
-**Expected output**: `ADMIN_API_KEY=admin_master_key`
+**Expected output**: `ADMIN_API_KEY=<YOUR_ADMIN_KEY>`
 
 ### Step 4: Restart the app container to pick up the new env var
 ```bash
-cd /home/ubuntu/rag-service
+cd <your-repo-checkout>
 docker compose restart app
 ```
 
@@ -44,7 +44,7 @@ docker compose restart app
 # Test tenant create (was returning 403, should now return 201)
 curl -s -X POST "http://localhost:8000/api/v1/tenants" \
   -H "Authorization: Bearer rk_*" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <YOUR_ADMIN_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"name":"verify-tenant"}'
 
@@ -55,7 +55,7 @@ curl -s -X POST "http://localhost:8000/api/v1/tenants" \
 # Test key issue (was returning 403, should now return 201)
 curl -s -X POST "http://localhost:8000/api/v1/verify-tenant/keys" \
   -H "Authorization: Bearer rk_*" \
-  -H "Admin-Key: admin_master_key" \
+  -H "Admin-Key: <YOUR_ADMIN_KEY>" \
   -H "Content-Type: application/json" \
   -d '{"prefix":"verify-key"}'
 
@@ -108,9 +108,9 @@ curl -s http://localhost:8000/health/slo
 
 ## Prevention
 - Ensure `.env` is never committed with `ADMIN_API_KEY=***` as a placeholder
-- The `.env.bak` file contains the correct value `ADMIN_API_KEY=admin_master_key` as a reference
+- The (there is no committed reference file; generate a fresh key with `openssl rand -base64 36`)
 - Add `ADMIN_API_KEY` validation to CI/CD pipeline to catch missing/placeholder values before deployment
-- Document in onboarding that `ADMIN_API_KEY=admin_master_key` must be set in `.env` before first start
+- Document in onboarding that `ADMIN_API_KEY=<YOUR_ADMIN_KEY>` must be set in `.env` before first start
 
 ## Linked Resources
 - `docs/circuit_breaker_open_runbook.md` - for service restart/circuit breaker scenarios
