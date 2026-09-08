@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     job_queue_backend: str = "inline"
     job_queue_connection: str = ""  # e.g. Redis URL when backend is "redis"
 
+    # Outbound webhooks (lead + generic ingestion callbacks). When False (default),
+    # egress is strictly public-only; enable only in local test harnesses.
+    webhook_allow_private: bool = False
+
     # Trusted reverse-proxy CIDRs. X-Forwarded-For is ONLY trusted when the immediate
     # connection comes from one of these (otherwise a client can spoof it and bypass IP
     # throttling). Empty = never trust XFF (use the real socket peer). Example:

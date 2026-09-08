@@ -51,6 +51,8 @@ class TenantOut(BaseModel):
     allowed_groups: list[str] = ["*"]
     branding: dict = {}
     system_prompt: str = ""
+    lead_webhook_url: str | None = None
+    ingest_webhook_url: str | None = None
     # PHASE I: per-tenant rate limit overrides
     rate_limit_rpm: int | None = None
     ingest_rate_limit_rpm: int | None = None
@@ -62,6 +64,12 @@ class TenantSystemPromptIn(BaseModel):
     end-user input), so it is NOT subject to the user-input injection filtering owned by the
     parallel P0/P1 security session. Max length keeps the persisted blob bounded."""
     system_prompt: str = Field(..., max_length=8000)
+
+
+class TenantWebhooksIn(BaseModel):
+    """Tenant-configurable outbound webhook URLs (lead + ingestion callbacks)."""
+    lead_webhook_url: str | None = Field(default=None, max_length=2000)
+    ingest_webhook_url: str | None = Field(default=None, max_length=2000)
 
 
 class TenantBranding(BaseModel):
