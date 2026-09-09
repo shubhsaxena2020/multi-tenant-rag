@@ -46,8 +46,10 @@ embedding / chunking / reranking / isolation / architecture, each with dated 202
   `USE_REAL_RERANKER=1`).
 - **Encryption-at-rest:** AES-GCM envelope, per-tenant key derived from
   `MASTER_ENCRYPTION_KEY` (KMS-style). Chunk text is sealed in Qdrant, never plaintext.
-- **Document-level RBAC:** optional per-tenant sub-user groups. Chunks carry an `acl`;
-  queries pass a group filter applied at the Qdrant layer (cannot be bypassed).
+- **Document-level RBAC:** new tenants default to `allowed_groups=["__public__"]`, so a
+  query that omits `acl` only sees public-tagged chunks. Operators can provision named
+  groups and callers must pass an allowed group; explicitly setting `allowed_groups=["*"]`
+  preserves unrestricted wildcard behavior for existing/single-user tenants.
 - **Tenant registry:** async SQLAlchemy — SQLite for dev/CI, Postgres-ready interface.
   Multiple rotatable hashed keys per tenant; publishable (`pk_`) vs secret (`rk_`) tiers;
   optional key expiry; per-tenant chunk quota.

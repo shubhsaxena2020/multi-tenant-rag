@@ -6,13 +6,13 @@ service restricts retrieval to chunks whose `acl` intersects those groups OR is 
 
 SECURITY MODEL (fixes audit finding #2 — caller-supplied acl must NOT be trusted blindly):
 The set of groups a tenant is *authorized* for is provisioned server-side on the tenant
-record (`allowed_groups`, default `["*"]` = any group). A request may only *narrow* to
+record (`allowed_groups`, default `["__public__"]` = public-only). A request may only *narrow* to
 groups the tenant is actually provisioned for; any requested group outside `allowed_groups`
 is dropped (logged as a self-escalation attempt). This prevents a tenant from widening its
 own access by simply claiming extra groups in the API body.
 
-`"*"` is a wildcard meaning "all groups the tenant is provisioned for"; it produces no
-filter (the tenant sees everything it is entitled to).
+`"__public__"` is the safe default; `"*"` remains a wildcard only when explicitly
+provisioned (the tenant sees every group it is entitled to).
 
 The tenant KEY still derives collection isolation (forged tenant IDs are rejected at the
 routing layer) — that mechanism is unchanged and correct; this layer is *document-level*
@@ -35,7 +35,8 @@ def resolve_acl(
 
     - requested is None:
         * query  (default_to_public=False): caller wants everything the tenant is
-          entitled to -> return the tenant's allowed_groups (wildcard or specific).
+          entitled to -> return the tenant's allowed_groups (public-only by default;
+          wildcard only when explicitly provisioned).
         * ingest (default_to_public=True): no group specified -> the doc is PUBLIC.
     - requested is a list: keep only groups the tenant is authorized for (drop the rest,
       which would otherwise be a self-escalation). If nothing remains, fall back to

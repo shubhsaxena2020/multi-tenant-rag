@@ -25,6 +25,9 @@ from .db import (
     set_tenant_branding as _set_tenant_branding,
 )
 from .db import (
+    set_tenant_allowed_groups as _set_tenant_allowed_groups,
+)
+from .db import (
     set_tenant_system_prompt as _set_tenant_system_prompt,
 )
 from .db import (
@@ -158,6 +161,10 @@ async def delete_tenant(tenant_id: str) -> bool:
 async def set_tenant_branding(tenant_id: str, branding: dict) -> bool:
     """Persist a tenant's sanitized branding blob (issue #23). Returns True if tenant exists."""
     return await _set_tenant_branding(tenant_id, branding)
+
+async def set_tenant_allowed_groups(tenant_id: str, allowed_groups: list[str]) -> bool:
+    return await _set_tenant_allowed_groups(tenant_id, allowed_groups)
+
 
 
 async def set_tenant_system_prompt(tenant_id: str, system_prompt: str) -> bool:

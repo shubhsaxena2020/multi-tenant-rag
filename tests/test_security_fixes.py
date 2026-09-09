@@ -123,11 +123,49 @@ def test_rbac_via_api_drops_unauthorized_group(client):
         "question": "payroll", "top_k": 5, "acl": ["admin"]})
     assert q.status_code == 200, q.text
     assert doc_id not in [h["doc_id"] for h in q.json()["results"]], q.json()
-    # sanity: querying WITHOUT acl (entitled-to-all view) DOES see it (hr is allowed).
+    # A caller that presents an allowed group can retrieve the matching document.
     q2 = client.post(f"{V}/corp/query", headers=auth, json={
-        "question": "payroll", "top_k": 5})
+        "question": "payroll", "top_k": 5, "acl": ["hr"]})
     assert q2.status_code == 200, q2.text
     assert doc_id in [h["doc_id"] for h in q2.json()["results"]], q2.json()
+
+
+def test_rbac_new_default_hides_group_acl_from_no_acl_query(client):
+    admin = {"Admin-Key": os.environ.get("ADMIN_API_KEY")}
+    created = client.post(
+        f"{V}/tenants", json={"name": "safe-default", "allowed_groups": ["finance"]}, headers=admin
+    )
+    assert created.status_code == 201, created.text
+    tenant_id = created.json()["tenant_id"]
+    auth = {"Authorization": f"Bearer {created.json()['api_key']}"}
+
+    ingested = client.post(
+        f"{V}/{tenant_id}/documents",
+        headers=auth,
+        json={"title": "budget", "content": "Confidential finance budget", "acl": ["finance"]},
+    )
+    assert ingested.status_code == 201, ingested.text
+
+    updated = client.patch(
+        f"{V}/tenants/{tenant_id}", json={"allowed_groups": ["__public__"]}, headers=admin
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["allowed_groups"] == ["__public__"]
+
+    queried = client.post(
+        f"{V}/{tenant_id}/query", headers=auth, json={"question": "budget", "top_k": 5}
+    )
+    assert queried.status_code == 200, queried.text
+    assert ingested.json()["doc_id"] not in [h["doc_id"] for h in queried.json()["results"]]
+
+
+def test_tenant_create_defaults_allowed_groups_to_public(client):
+    created = client.post(
+        f"{V}/tenants", json={"name": "public-default"},
+        headers={"Admin-Key": os.environ.get("ADMIN_API_KEY")},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["allowed_groups"] == ["__public__"]
 
 
 # ---------------- #3 X-Forwarded-For trust boundary ----------------
@@ -954,6 +992,7 @@ def test_init_db_adds_missing_columns_to_existing_tables(client):
         assert asyncio.new_event_loop().run_until_complete(_use()) == "secret"
     finally:
         os.unlink(path)
+
 
 
 
