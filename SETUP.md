@@ -111,6 +111,22 @@ curl -X POST localhost:8000/api/v1/tenants \
 ---
 
 ## Your first tenant → ingest → query
+### Document-level RBAC
+
+New tenants use allowed_groups=["__public__"]. Documents tagged with an ACL group
+are not returned to callers that omit acl unless that group has been explicitly
+provisioned for the tenant. Pass an allowed group in the query, or update an existing
+tenant as an operator:
+
+```bash
+curl -X PATCH localhost:8000/api/v1/tenants/$TID \
+  -H "Admin-Key: $ADMIN_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"allowed_groups":["support","billing"]}'
+```
+
+Set allowed_groups=["*"] explicitly only for a tenant that should retain unrestricted
+backward-compatible wildcard access; existing tenant rows are not changed automatically.
+
 
 ```bash
 TID=t_xxxx            # from the create-tenant response

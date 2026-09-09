@@ -31,6 +31,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from .config import get_settings
 
+from .rbac import PUBLIC_GROUP
 
 class Base(DeclarativeBase):
     pass
@@ -45,7 +46,7 @@ class Tenant(Base):
     plan: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    allowed_groups: Mapped[str] = mapped_column(Text, default='["*"]', nullable=False)
+    allowed_groups: Mapped[str] = mapped_column(Text, default=f'["{PUBLIC_GROUP}"]', nullable=False)
     # Per-tenant widget branding (issue #23): JSON blob {logo_url, header_title, accent, ...}.
     # Nullable text, default '{}'. Applied by the embeddable widget via CSS custom properties.
     branding: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
@@ -280,7 +281,7 @@ async def create_tenant(
 ) -> dict:
     """Create a new tenant with initial API key. Returns tenant dict."""
     now = datetime.now(UTC)
-    groups = allowed_groups if allowed_groups is not None else ["*"]
+    groups = allowed_groups if allowed_groups is not None else [PUBLIC_GROUP]
     async with (session or get_session_maker())() as s:
         tenant = Tenant(
             tenant_id=tenant_id,
@@ -583,6 +584,21 @@ async def set_tenant_branding(tenant_id: str, branding: dict, session: AsyncSess
             update(Tenant)
             .where(Tenant.tenant_id == tenant_id)
             .values(branding=json.dumps(branding or {}))
+        )
+        result = await s.execute(stmt)
+        await s.commit()
+        return (result.rowcount or 0) > 0
+
+
+async def set_tenant_allowed_groups(
+    tenant_id: str, allowed_groups: list[str], session: AsyncSession | None = None
+) -> bool:
+    """Persist the operator-provisioned document-RBAC groups for a tenant."""
+    async with (session or get_session_maker())() as s:
+        stmt = (
+            update(Tenant)
+            .where(Tenant.tenant_id == tenant_id)
+            .values(allowed_groups=json.dumps(allowed_groups))
         )
         result = await s.execute(stmt)
         await s.commit()

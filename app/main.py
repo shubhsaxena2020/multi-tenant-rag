@@ -88,6 +88,7 @@ from .models import (
     TenantBranding,
     TenantCreate,
     TenantKeysOut,
+    TenantAllowedGroupsIn,
     TenantOut,
     TenantSystemPromptIn,
     TenantWebhooksIn,
@@ -775,13 +776,40 @@ async def create_tenant(body: TenantCreate, request: Request, _: None = Depends(
     )
 
 
+@v1.patch("/tenants/{tenant_id}", response_model=TenantOut, status_code=status.HTTP_200_OK)
+async def update_tenant_allowed_groups(
+    tenant_id: str,
+    body: TenantAllowedGroupsIn,
+    request: Request,
+    _: None = Depends(require_admin),
+):
+    """Update the operator-provisioned document-RBAC groups for a tenant."""
+    admin_key = request.headers.get("Admin-Key") or request.headers.get("Authorization", "")
+    success = await tenants.set_tenant_allowed_groups(tenant_id, body.allowed_groups)
+    if not success:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    row = await tenants.get_tenant(tenant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    await audit_event(
+        "tenant.allowed_groups.update", actor=admin_key, target=tenant_id,
+        meta={"allowed_groups": body.allowed_groups},
+    )
+    return TenantOut(
+        tenant_id=row.tenant_id, name=row.name, api_key=f"{row.api_key}...",
+        plan=row.plan, created_at=row.created_at, chunk_count=row.chunk_count,
+        allowed_groups=row.allowed_groups, branding=row.branding or {},
+        system_prompt=row.system_prompt or "",
+    )
+
+
 @v1.get("/tenants", response_model=list[TenantOut])
 async def list_tenants(_: None = Depends(require_admin)):
     return [
         TenantOut(
             tenant_id=t.tenant_id, name=t.name, api_key=f"{t.api_key}...",
             plan=t.plan, created_at=t.created_at, chunk_count=t.chunk_count,
-            branding=t.branding or {},
+            allowed_groups=t.allowed_groups, branding=t.branding or {},
         )
         for t in await tenants.list_tenants()
     ]

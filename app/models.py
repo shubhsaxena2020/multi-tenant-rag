@@ -5,22 +5,20 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
+from .rbac import PUBLIC_GROUP
 
 
 # ---------- Tenant ----------
 class TenantCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=120)
     plan: str = "standard"  # standard | enterprise (siloed)
-    allowed_groups: list[str] | None = Field(
-        default=None,
+    allowed_groups: list[str] = Field(
+        default_factory=lambda: [PUBLIC_GROUP],
         description=(
             "Server-side RBAC: sub-user group labels this tenant is provisioned to use. "
-            "SECURITY (v9-SEC-D): the default (None/'*') grants NO isolation between "
-            "sub-users within the tenant — every caller can request any group label, so "
-            "document-level RBAC provides zero intra-tenant separation. To enable real "
-            "sub-user isolation, operators MUST pass an explicit group list (e.g. "
-            "['support','billing']) and ingest docs with a matching acl. '*' is only safe "
-            "for single-user tenants. Operator/admin-set only."
+            f"Defaults to [{PUBLIC_GROUP!r}] so documents tagged for other groups are not "
+            "returned when a caller omits acl. Operators may explicitly set ['*'] for "
+            "backward-compatible unrestricted tenant access, or provision named groups."
         ),
     )
     branding: dict | None = Field(
@@ -41,6 +39,12 @@ class TenantCreate(BaseModel):
     )
 
 
+
+
+class TenantAllowedGroupsIn(BaseModel):
+    """Operator-set document-RBAC groups for an existing tenant."""
+    allowed_groups: list[str] = Field(..., min_length=1)
+
 class TenantOut(BaseModel):
     tenant_id: str
     name: str
@@ -48,7 +52,7 @@ class TenantOut(BaseModel):
     plan: str
     created_at: datetime
     chunk_count: int = 0
-    allowed_groups: list[str] = ["*"]
+    allowed_groups: list[str] = [PUBLIC_GROUP]
     branding: dict = {}
     system_prompt: str = ""
     lead_webhook_url: str | None = None

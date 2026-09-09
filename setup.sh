@@ -14,6 +14,8 @@
 #   --no-tenant         skip creating the first tenant
 #   --port <n>          host port for the API (default 8000)
 #   --real-models       set USE_REAL_EMBEDDER=1 / USE_REAL_RERANKER=1 in a new .env
+#   --postgres          use Postgres instead of SQLite (multi-writer safe)
+#   --tls <domain>      also write a Caddyfile for TLS termination
 # ---------------------------------------------------------------------------
 set -eu
 
@@ -21,12 +23,16 @@ API_PORT=8000
 PROFILES=""
 MAKE_TENANT=1
 REAL_MODELS=0
+USE_PG=0
+TLS_DOMAIN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --with-monitoring) PROFILES="$PROFILES --profile monitoring" ;;
     --with-redis)      PROFILES="$PROFILES --profile ratelimit" ;;
     --no-tenant)       MAKE_TENANT=0 ;;
     --real-models)     REAL_MODELS=1 ;;
+    --postgres)        USE_PG=1 ;;
+    --tls)             shift; TLS_DOMAIN="$1" ;;
     --port)            shift; API_PORT="$1" ;;
     -h|--help)         sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown flag: $1" >&2; exit 2 ;;
@@ -78,6 +84,39 @@ fi
 set -a; . ./.env; set +a
 ADMIN_API_KEY="${ADMIN_API_KEY:-}"
 
+# --- optional: Postgres instead of SQLite -----------------------------------
+if [ "$USE_PG" = 1 ]; then
+  say "enabling Postgres (DB_URL -> postgresql+asyncpg://rag@postgres)"
+  cat > docker-compose.postgres.yml <<'YML'
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+      POSTGRES_DB: rag
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  app:
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  pgdata:
+YML
+  DC="$DC -f docker-compose.yml -f docker-compose.postgres.yml"
+  if grep -q '^DB_URL=' .env; then
+    sed -i.bak 's|^DB_URL=.*|DB_URL=postgresql+asyncpg://rag:rag@postgres:5432/rag|' .env && rm -f .env.bak
+  else
+    echo 'DB_URL=postgresql+asyncpg://rag:rag@postgres:5432/rag' >> .env
+  fi
+fi
+
 # --- bring up the stack -----------------------------------------------------
 say "starting containers ($DC up -d$PROFILES)"
 # API_PORT lets the compose file map a custom host port if it reads ${API_PORT}
@@ -94,6 +133,20 @@ until curl -fsS "${BASE}/health" >/dev/null 2>&1; do
 done
 printf '\n'; ok "API healthy: $(curl -fsS "${BASE}/health")"
 READY="$(curl -fsS "${BASE}/health/ready" 2>/dev/null || true)"; [ -n "$READY" ] && ok "ready: $READY"
+
+# --- ensure DB schema (idempotent; creates any missing tables e.g. eval_sets) ---
+$DC exec -T app python -m scripts.migrate 2>/dev/null && ok "schema ensured" || true
+
+# --- optional: TLS Caddyfile ---------------------------------------------------
+if [ -n "$TLS_DOMAIN" ]; then
+  cat > Caddyfile <<CADDY
+${TLS_DOMAIN} {
+  reverse_proxy localhost:${API_PORT}
+}
+CADDY
+  ok "wrote Caddyfile for ${TLS_DOMAIN} -> localhost:${API_PORT}"
+  say "run:  caddy run --config Caddyfile   (or point your existing proxy at localhost:${API_PORT})"
+fi
 
 # --- first tenant ---------------------------------------------------------
 if [ "$MAKE_TENANT" = 1 ]; then
